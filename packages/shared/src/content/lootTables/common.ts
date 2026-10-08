@@ -1,0 +1,79 @@
+import type { LootTableDef } from '../types';
+
+export default {
+  id: 'common',
+  drops: [
+    {
+      chance: 0.6,
+      entries: [
+        { chance: 0.55, gold: [1, 3] },
+        { chance: 0.25, item: 'heart_half' },
+        { chance: 0.1, item: 'heart' },
+      ],
+    },
+    {
+      chance: 0.2,
+      entries: [
+        { chance: 0.0714, item: 'dagger' },
+        { chance: 0.0714, item: 'short_sword' },
+        { chance: 0.0714, item: 'broadsword' },
+        { chance: 0.0714, item: 'mace' },
+        { chance: 0.0714, item: 'spear' },
+        { chance: 0.0714, item: 'battle_axe' },
+        { chance: 0.0714, item: 'shortbow' },
+        { chance: 0.0714, item: 'crossbow' },
+        { chance: 0.0714, item: 'fire_wand' },
+        { chance: 0.0714, item: 'frost_staff' },
+        { chance: 0.0714, item: 'alchemist_flask' },
+        { chance: 0.0714, item: 'leather_armor' },
+        { chance: 0.0714, item: 'chainmail' },
+        { chance: 0.0714, item: 'plate_armor' },
+      ],
+    },
+    {
+      chance: 0.12,
+      entries: [
+        { chance: 0.1427, item: 'heart_container' },
+        { chance: 0.1427, item: 'swift_boots' },
+        { chance: 0.1427, item: 'whetstone' },
+        { chance: 0.1427, item: 'fletching' },
+        { chance: 0.1427, item: 'quickdraw' },
+        { chance: 0.1427, item: 'twin_shot' },
+        { chance: 0.1427, item: 'long_reach' },
+      ],
+    },
+    {
+      chance: 0.2,
+      entries: [
+        { chance: 0.0999, item: 'hammer' },
+        { chance: 0.0999, item: 'plank_bundle' },
+        { chance: 0.0999, item: 'plaster_kit' },
+        { chance: 0.0999, item: 'wood_kit' },
+        { chance: 0.0999, item: 'roll_wallpaper_rose' },
+        { chance: 0.0999, item: 'roll_wallpaper_sage' },
+        { chance: 0.0999, item: 'roll_wallpaper_navy' },
+        { chance: 0.0999, item: 'roll_carpet_crimson' },
+        { chance: 0.0999, item: 'roll_carpet_teal' },
+        { chance: 0.0999, item: 'roll_wood_oak' },
+      ],
+    },
+    {
+      chance: 0.3,
+      entries: [
+        { chance: 0.0768, furniture: 'chair' },
+        { chance: 0.0768, furniture: 'stool' },
+        { chance: 0.0768, furniture: 'round_table' },
+        { chance: 0.0768, furniture: 'table' },
+        { chance: 0.0768, furniture: 'bed' },
+        { chance: 0.0768, furniture: 'sofa' },
+        { chance: 0.0768, furniture: 'dresser' },
+        { chance: 0.0768, furniture: 'piano' },
+        { chance: 0.0768, furniture: 'potted_plant' },
+        { chance: 0.0768, furniture: 'fern' },
+        { chance: 0.0768, furniture: 'candelabra' },
+        { chance: 0.0768, furniture: 'floor_lamp' },
+        { chance: 0.0768, furniture: 'torch_stand' },
+      ],
+    },
+  ],
+} satisfies LootTableDef;

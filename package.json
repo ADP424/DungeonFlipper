@@ -1,0 +1,17 @@
+{
+  "name": "dungeon-flipper",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,green \"npm run dev -w @df/server\" \"npm run dev -w @df/client\"",
+    "build": "npm run build -w @df/client",
+    "test": "vitest run",
+    "typecheck": "tsc -p packages/shared && tsc -p apps/client && tsc -p apps/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
