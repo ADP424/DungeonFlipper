@@ -1,10 +1,10 @@
 import type { PickupDef } from '../../types';
-import heartHalf from './heart_half';
-import heart from './heart';
-import gold from './gold';
+import halfSandwich from './half_sandwich';
+import sandwich from './sandwich';
+import cash from './cash';
 
 export default [
-  heartHalf,
-  heart,
-  gold,
+  halfSandwich,
+  sandwich,
+  cash,
 ] satisfies PickupDef[];

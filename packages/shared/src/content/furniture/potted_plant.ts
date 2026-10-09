@@ -9,4 +9,8 @@ export default {
   height: 0.8,
   blocksMovement: ['walk'],
   blocksProjectiles: [],
+  value: 1,
+  tags: ['plant'],
+  price: 6,
+  small: true,
 } satisfies FurnitureDef;

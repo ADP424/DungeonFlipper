@@ -1,28 +1,47 @@
-import { Application, Container, Graphics, Text } from 'pixi.js';
+import { Application, Container, Graphics, Text, Sprite } from 'pixi.js';
 import {
-  CELL_H, CELL_W, HealthStack, Rng, TILE_PX, addToHotbar, canHold, countLeft, createItem, enforceSingleTileFiller,
-  entryPoint, footprint, generateFloor, itemDef, registry, rollLoot, tileKey, uid,
+  AWAY_SLEEP_HEAL_FRACTION, CELL_H, CELL_W, HealthStack, MIDNIGHT_MINUTE, CLOCK_STEP, MINUTES_PER_SECOND, PASS_OUT_MINUTE, Rng,
+  TILE_PX, addToHotbar, advanceClock, canHold, countLeft, createItem, entryPoint, expandRoom, footprint,
+  APARTMENT_FLOOR, BARRICADE_TIERS, RoomLayout, barricadeKit, areaRooms, formatTime, partnerDoor, securityNeeds, generateFloor, getClock,
+  getInbox, registerAllResolvers, UTILITY_KINDS, fixtureSupplied, utilityNets, type UtilityKind, type UtilityNets, stairsDownRooms, structuralWallTarget, findSign, getTenants, unitAt,
+  type Barricade, isOwned, isOwnedBy, isSecure, itemDef, registry, rollLoot, tileKey, uid, wakeTime,
   type Command, type FurniturePlacement, type HealthLayer, type Hotbar, type ItemInstance, type LightDef,
+  type MonsterRecord, type PhoneMessage, type Tenant,
 } from '@df/shared';
 import { Input } from '../engine/input';
 import { Lighting, type LightInstance } from '../render/Lighting';
 import { ACTOR_HEIGHT, ShadowMaps, type ShadowBlob } from '../render/Shadows';
 import { effects } from './actions/effects';
+import { furnitureUses } from './actions/furnitureUses';
 import type { ToolAction } from './actions/tools';
 import { triggers } from './actions/triggers';
 import { Enemy } from './entities/Enemy';
 import { GroundItemEntity } from './entities/GroundItemEntity';
 import { Player } from './entities/Player';
+import { TenantNpc } from './entities/TenantNpc';
 import { Projectile, type ProjectileInit } from './entities/Projectile';
-import { RoomRuntime } from './RoomRuntime';
+import { AreaRuntime } from './AreaRuntime';
 import type { Session } from './Session';
 import { Ui } from '../ui/Ui';
+import { settings } from '../settings';
 
 const STEP = 1 / 60;
 const AMBIENT_DUNGEON = 0x3a3644;
 const AMBIENT_OWNED = 0x5a5250;
+/** Seconds to fade out before the night is resolved, then to hold the dark screen before waking. */
+const SLEEP_FADE = 0.9;
+const SLEEP_HOLD = 1.2;
+
+/** A monster spawning closer than this to the player is moved away... */
+const SPAWN_CLEARANCE = 4;
+/** ...to open floor at least this far from them. */
+const SPAWN_AWAY = 7;
 
 interface Fx { view: Container; life: number; update(dt: number): void }
+
+/** How the player fell asleep: in a bed, on the floor (phone), forced at midnight, or passed out at 2 AM. */
+type SleepKind = 'bed' | 'floor' | 'collapse' | 'passOut';
+interface SleepState { kind: SleepKind; homeBed: boolean; t: number; applied: boolean }
 
 export class Game {
   readonly input: Input;
@@ -36,7 +55,11 @@ export class Game {
   readonly lighting: Lighting;
   readonly ui: Ui;
   readonly player: Player;
-  room!: RoomRuntime;
+  /** The area the player is in: one dungeon room, or the whole estate (all your connected rooms). */
+  room!: AreaRuntime;
+  /** Room boundaries overlay (phone toggle): the true cells of each room in the estate. */
+  private readonly boundaries = new Graphics();
+  showBoundaries = false;
   rng = new Rng(Date.now() >>> 0);
   scale = 1;
   cam = { x: 0, y: 0 };
@@ -44,20 +67,37 @@ export class Game {
   private fx: Fx[] = [];
   private acc = 0;
   private dying = 0;
+  private sleeping: SleepState | null = null;
+  /** Game minutes run but not yet committed to the clock (it's saved in CLOCK_STEP steps). */
+  private clockAcc = 0;
+  /** Utility networks of the current floor, cached per world change. */
+  private nets: UtilityNets | null = null;
+  private netsKey = '';
+  /** Pipe / wire x-ray (over the lighting) and fault symptoms (puddles, sparks; under it). */
+  private readonly xray = new Graphics();
+  private readonly symptoms = new Graphics();
+  private xrayKey = '';
+  /** The crack fires on contact once you've been away from it (see `checkPortal`). */
+  private portalArmed = true;
+  /** The room you came from through the last door: kept quiet (see `quietRooms`). */
+  private prevRoomId: string | null = null;
+  /** The "barricade N doors" banner was shown for the current cleared room. */
+  private clearNoted = false;
   private toastCd = new Map<string, number>();
   private staticLights: LightInstance[] = [];
   private readonly shadows = new ShadowMaps();
   time = 0;
 
   constructor(readonly app: Application, readonly session: Session) {
+    registerAllResolvers();
     this.input = new Input(app.canvas);
     this.entityLayer.sortableChildren = true;
-    this.world.addChild(this.floorLayer, this.wallLayer, this.entityLayer, this.fxLayer);
+    this.world.addChild(this.floorLayer, this.symptoms, this.wallLayer, this.entityLayer, this.fxLayer);
     this.lighting = new Lighting(app.screen.width, app.screen.height);
     app.stage.addChild(this.world, this.lighting.overlay, this.overWorld);
     this.player = new Player(this);
     this.player.view.sortableChildren = true;
-    this.overWorld.addChild(this.player.overlay);
+    this.overWorld.addChild(this.xray, this.player.overlay, this.boundaries);
     this.ui = new Ui(this);
     this.resize();
 
@@ -65,6 +105,11 @@ export class Game {
     this.player.x = p.x;
     this.player.y = p.y;
     this.loadRoom(p.roomId, false);
+    this.checkCurfew();
+    // A brand-new world starts with the intro thread waiting on the phone.
+    if (getInbox(session.state, session.playerId).messages.some((m) => m.id.startsWith('intro-')) && getInbox(session.state, session.playerId).unread > 0) {
+      this.ui.openPhone('messages');
+    }
     app.ticker.add((t) => this.frame(Math.min(0.1, t.deltaMS / 1000)));
   }
 
@@ -94,8 +139,11 @@ export class Game {
     if (w === this.screenW && h === this.screenH) return;
     this.screenW = w;
     this.screenH = h;
-    // Fit one cell (the default room) to the screen.
-    this.scale = Math.max(1, Math.min(w / (CELL_W * TILE_PX), h / (CELL_H * TILE_PX)));
+    // Fit one cell (the default room) to the screen, keeping it clear of the right-hand hotbar
+    // (mirrored on the left so the room stays centred). The HUD scales with `--u` (styles.css).
+    const u = Math.min(window.innerHeight, window.innerWidth * 0.5625) / 720;
+    const hudMargin = 84 * u;
+    this.scale = Math.max(1, Math.min((w - 2 * hudMargin) / (CELL_W * TILE_PX), h / (CELL_H * TILE_PX)));
     this.lighting.resize(w / this.scale, h / this.scale);
   }
 
@@ -107,6 +155,13 @@ export class Game {
   }
 
   private frame(dt: number): void {
+    if (this.ui.paused) {
+      // Paused: nothing simulates and no input reaches the game, but the frozen frame still draws
+      // (and follows window resizes).
+      this.input.endFrame();
+      this.render(0);
+      return;
+    }
     this.acc += dt;
     while (this.acc >= STEP) {
       this.acc -= STEP;
@@ -118,8 +173,8 @@ export class Game {
 
   private updateCamera(): void {
     const viewW = this.app.screen.width / this.scale, viewH = this.app.screen.height / this.scale;
-    const L = this.room.layout;
-    const rx = L.originX * TILE_PX, ry = L.originY * TILE_PX, rw = L.w * TILE_PX, rh = L.h * TILE_PX;
+    const b = this.room.layout.fullBounds();
+    const rx = b.x * TILE_PX, ry = b.y * TILE_PX, rw = b.w * TILE_PX, rh = b.h * TILE_PX;
     const px = this.player.x * TILE_PX, py = this.player.y * TILE_PX;
     this.cam.x = rw <= viewW ? rx + rw / 2 - viewW / 2 : Math.max(rx, Math.min(rx + rw - viewW, px - viewW / 2));
     this.cam.y = rh <= viewH ? ry + rh / 2 - viewH / 2 : Math.max(ry, Math.min(ry + rh - viewH, py - viewH / 2));
@@ -128,8 +183,9 @@ export class Game {
   private render(dt: number): void {
     this.resize();
     this.updateCamera();
+    this.updateStreaming();
     let sx = 0, sy = 0;
-    if (this.shakeT > 0) {
+    if (this.shakeT > 0 && settings.screenShake) {
       sx = (Math.random() - 0.5) * 6 * this.shakeT;
       sy = (Math.random() - 0.5) * 6 * this.shakeT;
     }
@@ -138,9 +194,11 @@ export class Game {
       c.position.set(Math.round((-this.cam.x + sx) * this.scale), Math.round((-this.cam.y + sy) * this.scale));
     }
     this.player.syncView();
+    this.drawUtilities();
     for (const e of this.room.enemies) e.syncView();
     for (const p of this.room.projectiles) p.syncView();
     for (const i of this.room.items) i.syncView();
+    for (const n of this.room.npcs) n.syncView();
     this.lighting.render(
       this.app.renderer, this.cam.x - sx, this.cam.y - sy, this.scale, this.collectLights(),
       this.room.owned ? AMBIENT_OWNED : AMBIENT_DUNGEON, dt, this.shadows, this.shadowBlobs(),
@@ -159,9 +217,9 @@ export class Game {
     }
     for (const e of this.room.enemies) if (e.alpha > 0.2) add(e.x, e.y, e.light, e.id);
     for (const p of this.room.projectiles) add(p.x, p.y - p.z, p.light, p.id);
-    for (const f of this.room.layout.state.furniture) {
+    for (const f of this.room.layout.furniture()) {
       const def = registry.furniture.get(f.defId);
-      if (def.light) add(f.x + footprint(def, f.rot).w / 2, f.y + 0.4, def.light, f.x * 31 + f.y);
+      if (def.light && this.supplied(f)) add(f.x + footprint(def, f.rot).w / 2, f.y + 0.4, def.light, f.x * 31 + f.y);
     }
     return out;
   }
@@ -169,10 +227,12 @@ export class Game {
   /** Moving things that cast shadows: the player and visible enemies. */
   private shadowBlobs(): ShadowBlob[] {
     const out: ShadowBlob[] = [];
-    if (this.player.view.visible) out.push({ x: this.player.x, y: this.player.y, r: this.player.radius, h: ACTOR_HEIGHT });
+    const shape = (a: { spriteKey: string; sprite: Sprite }) => ({ key: a.spriteKey, dy: a.sprite.y, sx: a.sprite.scale.x, sy: a.sprite.scale.y });
+    if (this.player.view.visible) out.push({ x: this.player.x, y: this.player.y, r: this.player.radius, h: ACTOR_HEIGHT, ...shape(this.player) });
     for (const e of this.room.enemies) {
-      if (!e.dead && e.alpha > 0.2) out.push({ x: e.x, y: e.y, r: e.radius, h: ACTOR_HEIGHT * (e.def.scale ?? 1) });
+      if (!e.dead && e.alpha > 0.2) out.push({ x: e.x, y: e.y, r: e.radius, h: ACTOR_HEIGHT * (e.def.scale ?? 1), ...shape(e) });
     }
+    for (const n of this.room.npcs) out.push({ x: n.x, y: n.y, r: n.radius, h: ACTOR_HEIGHT, ...shape(n) });
     return out;
   }
 
@@ -200,20 +260,63 @@ export class Game {
       this.updateFx(dt);
       return;
     }
+    if (this.sleeping) {
+      this.updateSleep(dt);
+      this.updateFx(dt);
+      return;
+    }
 
+    this.runClock(dt);
+    if (this.sleeping) return;
     const room = this.room;
     room.player = this.player;
     room.updateFlow(dt);
     this.player.update(dt);
+    this.noticePlanks();
+    this.trackRooms();
 
     for (const e of room.enemies) if (!e.dead) e.update(this, dt);
     this.separateEnemies();
     this.updateProjectiles(dt);
     this.updateItems(dt);
+    this.updateNpcs(dt);
     this.updateFx(dt);
     this.cleanup();
     this.checkRoomClear();
+    this.checkPortal();
     this.checkTransitions();
+  }
+
+  /**
+   * The crack takes you through the moment you walk into it, like stairs, carrying whatever you hold.
+   * You arrive a step away from the other end, and it only takes you back once you've stepped away
+   * from it, so holding a direction doesn't bounce you between the two ends.
+   */
+  private checkPortal(): void {
+    const mv = this.input.moveVector();
+    const pl = this.player;
+    let near = Infinity;
+    for (const f of this.room.layout.furniture()) {
+      if (f.defId !== 'portal') continue;
+      const { w, h } = footprint(registry.furniture.get(f.defId), f.rot);
+      const cx = Math.max(f.x, Math.min(f.x + w, pl.x)), cy = Math.max(f.y, Math.min(f.y + h, pl.y));
+      const dx = cx - pl.x, dy = cy - pl.y;
+      const d = Math.hypot(dx, dy);
+      near = Math.min(near, d);
+      if (!this.portalArmed || d > pl.radius + 0.08 || dx * mv.x + dy * mv.y <= 0) continue;
+      this.portalArmed = false;
+      this.usePortal();
+      return;
+    }
+    if (near > pl.radius + 0.6) this.portalArmed = true;
+  }
+
+  /** Walking into a plank barricade: explain how to get through. */
+  private noticePlanks(): void {
+    const mv = this.input.moveVector();
+    if (!mv.x && !mv.y) return;
+    const tx = Math.floor(this.player.x + mv.x * 0.8), ty = Math.floor(this.player.y + mv.y * 0.8);
+    if (this.room.layout.barricadeAt(tx, ty)?.tier === 1) this.toast('Boarded up. Pry the planks off with a crowbar to get through.', 'planks');
   }
 
   private separateEnemies(): void {
@@ -321,7 +424,7 @@ export class Game {
       const fx = effects[def.effect.id];
       if (!fx || !fx(this, def.effect.params ?? {}, inst)) return;
       this.removeGroundItem(it);
-      if (def.id === 'gold') this.floatText(it.x, it.y, `+${inst.data.amount ?? 1}`, 0xffd34a);
+      if (def.id === 'cash') this.floatText(it.x, it.y, `+${inst.data.amount ?? 1}`, 0xffd34a);
       return;
     }
     if (def.kind === 'passive') {
@@ -343,7 +446,7 @@ export class Game {
       if (countLeft(rest) < before) {
         this.setHotbar(hb);
         it.data.item = rest;
-        this.dispatch({ type: 'groundItemAdded', roomId: this.room.info.id, item: structuredClone(it.data) });
+        this.dispatch({ type: 'groundItemAdded', roomId: it.roomId, item: structuredClone(it.data) });
       }
       return;
     }
@@ -354,7 +457,7 @@ export class Game {
 
   private removeGroundItem(it: GroundItemEntity): void {
     it.dead = true;
-    this.dispatch({ type: 'groundItemRemoved', roomId: this.room.info.id, uid: it.data.uid });
+    this.dispatch({ type: 'groundItemRemoved', roomId: it.roomId, uid: it.data.uid });
   }
 
   private updateFx(dt: number): void {
@@ -383,13 +486,291 @@ export class Game {
 
   private checkRoomClear(): void {
     const r = this.room;
-    if (r.owned) return;
-    if (r.enemies.some((e) => e.spawnId && !e.dead)) return;
-    if (r.layout.liveSpawns().length > 0) return;
-    this.dispatch({ type: 'roomOwned', roomId: r.info.id });
-    for (const e of r.enemies) if (!e.spawnId) this.killEnemy(e, false);
-    this.ui.banner('Room claimed!', 'This room is now your property.');
+    const id = r.currentId;
+    if (isOwned(r.state)) return;
+    if (r.enemies.some((e) => e.monsterId && !e.dead && e.roomId === id) || r.state.monsters.length > 0) {
+      this.clearNoted = false;
+      return;
+    }
+    for (const e of r.enemies) if (!e.monsterId && !e.dead && e.roomId === id) this.killEnemy(e, false);
+    if (this.clearNoted) return;
+    this.clearNoted = true;
+    this.ui.banner('Room cleared', 'Plant a company flag to claim it, and barricade doors to rooms with monsters, or more will come.');
+  }
+
+  /** Plant a company flag on a tile of the current (cleared) room: the room is company property now. */
+  plantFlag(x: number, y: number): void {
+    const id = this.room.roomIdAt(x, y) ?? this.room.currentId;
+    this.dispatch({ type: 'furniturePlaced', roomId: id, placement: { uid: uid(), defId: 'company_flag', x, y, rot: 0 } });
+    this.dispatch({ type: 'roomOwned', roomId: id, ownerId: this.session.playerId });
+    this.furnitureChanged();
+    this.burst(x + 0.5, y + 0.5, 0xd0b040, 16);
+    this.ui.banner('Property acquired!', 'This room is company property now.');
+    const need = securityNeeds(this.session.state, this.room.layout.layouts.get(id)!.info);
+    if (need.doors) this.toast(`Not secure yet: ${need.doors} door${need.doors === 1 ? ' needs' : 's need'} a barricade (tier ${need.tier} or better)`, 'insecure');
+    // It may join your estate: walk on into the bigger space without a screen change.
+    if (areaRooms(this.session.state, id).length > 1) this.reloadArea();
     void this.session.flush();
+  }
+
+  /** Rebuild the area around the player in place (the estate changed shape). No time passes. */
+  private reloadArea(): void {
+    this.loadRoom(this.room.currentId, false);
+  }
+
+  /**
+   * Knock through the structural wall at (x, y) and its twin across the wall line, between any two
+   * rooms (see `structuralWallTarget`); costs the heavy tool 2 uses. The rooms become one area.
+   */
+  demolishWall(x: number, y: number): void {
+    const st = this.session.state;
+    const id = this.room.roomIdAt(x, y);
+    const info = id ? this.room.layout.layouts.get(id)?.info : undefined;
+    const other = info && structuralWallTarget(st, info, x, y);
+    if (!id || !other) return;
+    // A room you break into gets its doors fixed now, as entering it would (floors grow on entry).
+    const expansion = expandRoom(st.floors[this.floorIndex]!, st.seed, other.roomId);
+    if (expansion) this.dispatch({ type: 'roomsGenerated', floor: this.floorIndex, infos: expansion.infos, states: expansion.states });
+    const hb = structuredClone(this.session.player.hotbar);
+    if (hb.main) hb.main.data.count = Math.max(0, countLeft(hb.main) - 2);
+    this.setHotbar(hb);
+    this.dispatch({ type: 'tileSet', roomId: id, x, y, obstacle: null });
+    this.dispatch({ type: 'tileSet', roomId: other.roomId, x: other.x, y: other.y, obstacle: null });
+    this.burst(x + 0.5, y + 0.5, 0x8a8a8a, 18);
+    this.burst(other.x + 0.5, other.y + 0.5, 0x8a8a8a, 18);
+    this.shake(0.4);
+    this.toast('The wall comes down');
+    if (!this.room.layout.layouts.has(other.roomId)) return this.reloadArea();
+    this.room.layout.layouts.get(id)!.rebuildFurniture();
+    this.room.rebuildRoom(id);
+    this.room.rebuildRoom(other.roomId);
+    this.rebuildStaticLights();
+    this.drawBoundaries();
+  }
+
+  /** Install / repair / remove (null) the barricade on a door tile of the current room. */
+  setBarricade(x: number, y: number, barricade: Barricade | null): void {
+    const st = this.session.state;
+    const id = this.room.roomIdAt(x, y) ?? this.room.currentId;
+    const wasSecure = isSecure(st, id);
+    this.dispatch({ type: 'barricadeSet', roomId: id, door: tileKey(x, y), barricade });
+    // It sits in both halves of the doorway.
+    this.room.rebuildRoom(id);
+    const other = partnerDoor(st, id, tileKey(x, y));
+    if (other) this.room.rebuildRoom(other.roomId);
+    if (!isOwned(st.rooms[id])) return;
+    const secure = isSecure(st, id);
+    if (secure && st.rooms[id]!.insecureSince !== undefined) this.dispatch({ type: 'roomInsecure', roomId: id, since: null });
+    if (secure && !wasSecure) this.toast('This room is secure');
+    if (!secure && wasSecure) this.toast('This room is no longer secure');
+  }
+
+  /** The active rooms' barricades, to spot changes while time passes. */
+  private barricadesSnapshot(): string {
+    return JSON.stringify(this.room.layout.activeIds.map((id) => this.session.state.rooms[id]?.barricades));
+  }
+
+  /**
+   * After time passes, bring the live area in line with its persisted state: monsters that spilled
+   * in appear at their door, and barricades that wore down or broke are redrawn.
+   */
+  private reconcileRoom(barricadesBefore: string): void {
+    for (const id of this.room.layout.activeIds) this.spawnRoster(id, true);
+    this.syncNpcs();
+    if (this.barricadesSnapshot() !== barricadesBefore) {
+      this.room.layout.rebuildFurniture();
+      for (const id of this.room.layout.activeIds) this.room.rebuildRoom(id);
+    }
+  }
+
+  /**
+   * Spawn a room's roster monsters that aren't live yet. One whose spot is right next to the player
+   * (they came in through the door you just used, say) appears somewhere across the room instead.
+   */
+  private spawnRoster(id: string, announce = false): void {
+    const L = this.room.layout.layouts.get(id);
+    if (!L) return;
+    const live = new Set(this.room.enemies.filter((e) => e.monsterId && !e.dead).map((e) => e.monsterId));
+    let away: { x: number; y: number }[] | null = null;
+    for (const placed of L.rosterPlacements()) {
+      const { record } = placed;
+      if (live.has(record.id)) continue;
+      let { x, y } = placed;
+      if (Math.hypot(x - this.player.x, y - this.player.y) < SPAWN_CLEARANCE) {
+        away ??= this.spotsAwayFromPlayer(L);
+        const spot = away.length ? away[Math.floor(Math.random() * away.length)]! : null;
+        if (spot) ({ x, y } = spot);
+      }
+      const e = this.addEnemy(new Enemy(record.defId, x, y, { monsterId: record.id, hpFrac: record.hpFrac, hpMul: record.hpMul }));
+      e.roomId = id;
+      if (announce) this.burst(x, y, 0x40302a, 10);
+    }
+  }
+
+  /** Open floor in a room well away from the player (the farthest tiles if the room is small). */
+  private spotsAwayFromPlayer(L: RoomLayout): { x: number; y: number }[] {
+    const open: { x: number; y: number; d: number }[] = [];
+    for (const t of L.tiles()) {
+      if (L.kindAt(t.x, t.y) !== 'floor' || L.blocksMovement(t.x, t.y, 'walk')) continue;
+      open.push({ x: t.x + 0.5, y: t.y + 0.5, d: Math.hypot(t.x + 0.5 - this.player.x, t.y + 0.5 - this.player.y) });
+    }
+    const far = open.filter((t) => t.d >= SPAWN_AWAY);
+    if (far.length) return far;
+    open.sort((a, b) => b.d - a.d);
+    return open.slice(0, 3);
+  }
+
+  // ───────────────────────────── streaming & crossing rooms ─────────────────────────────
+
+  /**
+   * Keep only the rooms near the camera live: rooms coming into range get renderers, monsters and
+   * ground items; rooms leaving it persist their roster and drop theirs (entities and views together).
+   */
+  private updateStreaming(force = false): void {
+    const view = {
+      x: this.cam.x / TILE_PX, y: this.cam.y / TILE_PX,
+      w: this.app.screen.width / this.scale / TILE_PX, h: this.app.screen.height / this.scale / TILE_PX,
+    };
+    const { added, removed } = this.room.setActive(this.room.roomsNear(view));
+    if (!added.length && !removed.length && !force) return;
+    for (const id of removed) this.parkRoom(id);
+    for (const id of added) {
+      this.spawnRoster(id);
+      const st = this.session.state.rooms[id]!;
+      for (const g of st.groundItems) {
+        const it = new GroundItemEntity(structuredClone(g));
+        it.roomId = id;
+        this.addGroundItem(it);
+      }
+    }
+    this.rebuildStaticLights();
+    this.drawBoundaries();
+    this.syncNpcs();
+  }
+
+  // ───────────────────────────── tenants ─────────────────────────────
+
+  /**
+   * Live tenants and applicants match the records: anyone whose unit's sign is in an active room is
+   * there (unless they fled next door), standing near the sign at first; anyone else isn't.
+   */
+  syncNpcs(): void {
+    const st = this.session.state;
+    const active = new Set(this.room.layout.activeIds);
+    const want = new Map<string, { t: Tenant; roomId: string; x: number; y: number }>();
+    for (const t of Object.values(getTenants(st))) {
+      if (t.floor !== this.floorIndex || t.displaced) continue;
+      const sign = findSign(st, t.signUid);
+      if (sign && active.has(sign.roomId)) want.set(t.id, { t, roomId: sign.roomId, x: sign.f.x, y: sign.f.y });
+    }
+    const npcs = this.room.npcs;
+    for (let i = npcs.length - 1; i >= 0; i--) {
+      if (want.has(npcs[i]!.tenantId)) continue;
+      npcs[i]!.view.destroy({ children: true });
+      npcs.splice(i, 1);
+    }
+    for (const w of want.values()) {
+      if (npcs.some((n) => n.tenantId === w.t.id)) continue;
+      const unit = unitAt(st, this.floorIndex, w.x, w.y);
+      const spot = this.room.layout.nearestOpenFloor(w.x + 0.5, w.y + 1.5) ?? { x: w.x, y: w.y + 1 };
+      const npc = new TenantNpc(w.t, spot.x + 0.5, spot.y + 0.5, unit ? [...unit.tiles] : []);
+      npc.roomId = w.roomId;
+      const bed = unit?.furniture.find((f) => registry.furniture.tryGet(f.f.defId)?.tags?.includes('bed'));
+      const rest = bed && this.room.layout.nearestOpenFloor(bed.f.x + 0.5, bed.f.y + 0.5);
+      npc.bedSpot = rest ? { x: rest.x + 0.5, y: rest.y + 0.5 } : null;
+      npcs.push(npc);
+      this.entityLayer.addChild(npc.view);
+    }
+  }
+
+  private updateNpcs(dt: number): void {
+    const night = getClock(this.session.state).minute >= 22 * 60;
+    const tenants = getTenants(this.session.state);
+    for (const n of this.room.npcs) n.update(this, dt, night && tenants[n.tenantId]?.status === 'living' ? n.bedSpot : null);
+  }
+
+  /** A tenant or applicant under the cursor. */
+  npcUnderCursor(): TenantNpc | undefined {
+    const m = this.mouseWorld();
+    return this.room.npcs.find((n) => Math.hypot(n.x - m.x, n.y - 0.3 - m.y) < 0.55);
+  }
+
+  /** Put a For Rent sign down on a tile of your property: lists its unit. */
+  placeSign(x: number, y: number): void {
+    const id = this.room.roomIdAt(x, y) ?? this.room.currentId;
+    this.dispatch({ type: 'furniturePlaced', roomId: id, placement: { uid: uid(), defId: 'for_rent_sign', x, y, rot: 0, data: { closed: false } } });
+    this.furnitureChanged();
+    const unit = unitAt(this.session.state, this.floorIndex, x, y);
+    const beds = unit?.furniture.filter((f) => registry.furniture.tryGet(f.f.defId)?.tags?.includes('bed')).length ?? 0;
+    if (!this.room.ownedAt(x, y)) this.toast("It's up, but this isn't your property: nobody will apply here.");
+    else this.toast(beds ? 'Listed for rent. Applicants come up from the lobby.' : 'Listed, but nobody will rent a place without a bed.');
+  }
+
+  /** Click a For Rent sign: open or close its listing. */
+  toggleListing(uidOf: string): void {
+    const at = this.room.layout.findFurniture(uidOf);
+    if (!at) return;
+    const closed = !(at.f.data?.closed === true);
+    this.dispatch({ type: 'furnitureUpdated', roomId: at.room.info.id, placement: { ...at.f, data: { ...at.f.data, closed } } });
+    this.toast(closed ? 'Listing closed' : 'Listing open');
+  }
+
+  /** A room leaves the active set: its monsters' wounds are saved and its live entities go away. */
+  private parkRoom(id: string): void {
+    this.syncRoster(id);
+    for (const list of [this.room.enemies, this.room.items, this.room.npcs] as Array<Array<Enemy | GroundItemEntity | TenantNpc>>) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i]!.roomId !== id) continue;
+        list[i]!.view.destroy({ children: true });
+        list.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * Walking between the estate's rooms: the player's room follows them (time doesn't pass), and
+   * monsters that wander into another room move to its roster.
+   */
+  private trackRooms(): void {
+    const rid = this.room.roomIdAt(this.player.x, this.player.y);
+    if (rid && rid !== this.room.currentId) {
+      this.room.currentId = rid;
+      const p = this.session.player;
+      this.dispatch({ type: 'playerMoved', playerId: p.id, floor: p.floor, roomId: rid, x: this.player.x, y: this.player.y });
+      this.clearNoted = false;
+      this.ui.onRoomChanged();
+      this.checkCurfew();
+    }
+    for (const e of this.room.enemies) {
+      if (e.dead) continue;
+      const r = this.room.roomIdAt(e.x, e.y);
+      if (!r || r === e.roomId) continue;
+      if (e.monsterId && e.roomId) this.dispatch({ type: 'monsterMoved', from: e.roomId, to: r, monsterId: e.monsterId });
+      e.roomId = r;
+    }
+  }
+
+  /** The phone's "Room boundaries" overlay: outlines each active room's true cells. */
+  toggleBoundaries(): void {
+    this.showBoundaries = !this.showBoundaries;
+    this.drawBoundaries();
+  }
+
+  private drawBoundaries(): void {
+    const g = this.boundaries.clear();
+    if (!this.showBoundaries) return;
+    for (const id of this.room.layout.activeIds) {
+      const info = this.room.layout.layouts.get(id)!.info;
+      const cells = new Set(info.cells.map((c) => `${c.cx},${c.cy}`));
+      for (const c of info.cells) {
+        const x = c.cx * CELL_W * TILE_PX, y = c.cy * CELL_H * TILE_PX, w = CELL_W * TILE_PX, h = CELL_H * TILE_PX;
+        if (!cells.has(`${c.cx},${c.cy - 1}`)) g.moveTo(x, y).lineTo(x + w, y);
+        if (!cells.has(`${c.cx},${c.cy + 1}`)) g.moveTo(x, y + h).lineTo(x + w, y + h);
+        if (!cells.has(`${c.cx - 1},${c.cy}`)) g.moveTo(x, y).lineTo(x, y + h);
+        if (!cells.has(`${c.cx + 1},${c.cy}`)) g.moveTo(x + w, y).lineTo(x + w, y + h);
+      }
+    }
+    g.stroke({ color: 0xffd060, width: 1.5, alpha: 0.85 });
   }
 
   private checkTransitions(): void {
@@ -399,7 +780,9 @@ export class Game {
     if (!this.room.layout.containsTile(tx, ty)) {
       const door = this.room.exits.get(key);
       if (door) {
+        const from = this.room.info.id;
         this.loadRoom(door.toRoom, true);
+        this.afterTransition(from);
         return;
       }
     }
@@ -427,12 +810,14 @@ export class Game {
   loadRoom(roomId: string, record: boolean): void {
     const st = this.session.state;
     const p = this.session.player;
+    // Floors grow one room ahead of the player: entering a room fixes its doors and creates the rooms behind them.
+    const expansion = expandRoom(st.floors[p.floor]!, st.seed, roomId);
+    if (expansion) this.dispatch({ type: 'roomsGenerated', floor: p.floor, infos: expansion.infos, states: expansion.states });
     const info = st.floors[p.floor]!.rooms[roomId]!;
     const roomState = st.rooms[roomId]!;
     if (this.room) {
+      for (const id of this.room.layout.activeIds) this.syncRoster(id);
       this.room.destroy();
-      this.floorLayer.removeChildren();
-      this.wallLayer.removeChildren();
     }
     // Effects belong to the room they happened in: drop them from the update list *and* destroy
     // their views together, so nothing updates a destroyed view.
@@ -440,31 +825,23 @@ export class Game {
     this.fx = [];
     this.fxLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     this.player.swing = null;
-    this.room = new RoomRuntime(info, roomState, this.entityLayer);
+    const layers = { floor: this.floorLayer, walls: this.wallLayer, entities: this.entityLayer };
+    this.room = new AreaRuntime(st, p.floor, areaRooms(st, roomId), roomId, layers, this.session.playerId);
     this.room.player = this.player;
-    this.room.exitAllowed = (door) => {
-      if (!this.session.player.carrying) return true;
-      if (st.rooms[door.toRoom]?.owned) return true;
-      this.toast("You can't carry furniture into rooms you don't own", 'carry');
-      return false;
-    };
-    this.floorLayer.addChild(this.room.renderer.floor);
-    this.wallLayer.addChild(this.room.renderer.walls);
     if (!this.player.view.parent) this.entityLayer.addChild(this.player.view);
-
-    const hpMul = (boss: boolean) => (boss ? 1 + 0.5 * (p.floor - 1) : 1 + 0.15 * (p.floor - 1));
-    for (const s of this.room.layout.liveSpawns()) {
-      const e = new Enemy(s.enemy, s.x, s.y, { spawnId: s.spawnId, hpMul: hpMul(!!registry.enemies.get(s.enemy).boss) });
-      this.addEnemy(e);
-    }
-    for (const g of roomState.groundItems) this.addGroundItem(new GroundItemEntity(structuredClone(g)));
-    this.rebuildStaticLights();
+    this.updateCamera();
+    this.updateStreaming(true);
     this.player.lastTile = tileKey(Math.floor(this.player.x), Math.floor(this.player.y));
     this.player.kx = this.player.ky = 0;
     if (record || !roomState.visited) {
       this.dispatch({ type: 'playerMoved', playerId: this.session.playerId, floor: p.floor, roomId, x: this.player.x, y: this.player.y });
     }
     this.ui.onRoomChanged();
+    this.clearNoted = false;
+    if (isOwnedBy(roomState, this.session.playerId) && !isSecure(st, roomId) && !roomState.monsters.length) {
+      const need = securityNeeds(st, info);
+      if (need.doors) this.toast(`Not secure: ${need.doors} door${need.doors === 1 ? ' needs' : 's need'} a barricade (tier ${need.tier} or better)`, 'insecure');
+    }
     void this.session.flush();
   }
 
@@ -482,12 +859,13 @@ export class Game {
       this.dispatch({ type: 'floorGenerated', floor, rooms });
     }
     const floor = st.floors[target]!;
-    const roomId = delta > 0 ? floor.entryRoomId : floor.stairsDownRoomId;
+    // Every stairs down leads to the next floor's lobby; the stairs up lead back to the last stairs taken down.
+    const roomId = delta > 0 ? floor.lobbyRoomId : floor.lastStairsDown ?? stairsDownRooms(floor)[0]?.id;
     if (!roomId) return;
+    if (delta > 0) this.dispatch({ type: 'stairsDescended', floor: p.floor, roomId: this.room.info.id });
     const stairsId = delta > 0 ? 'stairs_up' : 'stairs_down';
     p.floor = target;
-    const probe = new RoomRuntime(floor.rooms[roomId]!, st.rooms[roomId]!, new Container());
-    const L = probe.layout;
+    const L = new RoomLayout(floor.rooms[roomId]!, st.rooms[roomId]!);
     let spot: { x: number; y: number } | null = null;
     // Ahead first, then to either side, then behind.
     const tries = [[dir.dx, dir.dy], [dir.dy, dir.dx], [-dir.dy, -dir.dx], [-dir.dx, -dir.dy]] as const;
@@ -498,17 +876,215 @@ export class Game {
       const side = tries.find(([dx, dy]) => open(t.x + dx, t.y + dy)) ?? tries[0];
       spot = { x: t.x + side[0] + 0.5, y: t.y + side[1] + 0.5 };
     }
-    probe.destroy();
     const e = entryPoint(floor);
     this.player.x = spot?.x ?? e.x;
     this.player.y = spot?.y ?? e.y;
+    const from = this.room.info.id;
     this.loadRoom(roomId, true);
-    this.ui.banner(`Floor ${target}`, delta > 0 ? 'Deeper into the dungeon…' : 'Back up the stairs.');
+    this.ui.banner(`Level ${target}`, delta > 0 ? 'Deeper into the Backrooms…' : 'Back up the stairs.');
+    this.afterTransition(from);
+  }
+
+  /** Floors whose lobby you've been to: the elevator's buttons. */
+  elevatorFloors(): number[] {
+    const st = this.session.state;
+    return Object.values(st.floors)
+      .filter((f) => f.index !== APARTMENT_FLOOR && st.rooms[f.lobbyRoomId]?.visited)
+      .map((f) => f.index)
+      .sort((a, b) => a - b);
+  }
+
+  /** Ride the elevator to another floor's lobby. */
+  rideElevator(target: number): void {
+    if (target === this.floorIndex || !this.elevatorFloors().includes(target)) return;
+    this.arriveAtLobby(target, 'elevator', `Level ${target}`, 'Ding.');
+  }
+
+  /** Step through the crack: apartment ↔ Level 1's lobby. */
+  usePortal(): void {
+    const st = this.session.state;
+    if (this.floorIndex === APARTMENT_FLOOR) this.arriveAtLobby(1, 'portal', 'Level 1', 'The carpet is damp. The lights hum.');
+    else if (this.room.info.id === st.floors[1]?.lobbyRoomId) this.arriveAtLobby(APARTMENT_FLOOR, 'portal', 'Home', 'Your apartment. It smells like old pizza.');
+  }
+
+  /**
+   * Arrive in a floor's lobby next to the furniture whose use is `nearUse` (the elevator or the portal).
+   */
+  private arriveAtLobby(target: number, near: string, title: string, sub: string): void {
+    const st = this.session.state;
+    const p = this.session.player;
+    const floor = st.floors[target];
+    if (!floor) return;
+    const lobby = floor.lobbyRoomId;
+    const anchor = st.rooms[lobby]!.furniture.find((f) => f.defId === near);
+    p.floor = target;
+    const L = new RoomLayout(floor.rooms[lobby]!, st.rooms[lobby]!);
+    const spot = anchor ? L.nearestOpenFloor(anchor.x + 0.5, anchor.y + 1.5) : null;
+    const e = entryPoint(floor);
+    this.player.x = spot ? spot.x + 0.5 : e.x;
+    this.player.y = spot ? spot.y + 0.5 : e.y;
+    this.loadRoom(lobby, true);
+    this.portalArmed = false;
+    this.ui.banner(title, sub);
+    this.prevRoomId = null;
+    this.checkCurfew();
+  }
+
+  /**
+   * Persist the roster's health before leaving a room: monsters keep their wounds, but are placed
+   * back on their spawn tiles next time. Transient enemies (summons) are not persisted.
+   */
+  private syncRoster(roomId: string): void {
+    const state = this.session.state.rooms[roomId];
+    if (!state) return;
+    const live = new Map(this.room.enemies.filter((e) => e.monsterId && !e.dead && e.roomId === roomId).map((e) => [e.monsterId!, e]));
+    let changed = false;
+    const monsters = state.monsters.map((m): MonsterRecord => {
+      const e = live.get(m.id);
+      if (!e) return m;
+      const frac = Math.round(Math.max(0.001, Math.min(1, e.hp / e.maxHp)) * 1000) / 1000;
+      const { hpFrac: _old, ...rest } = m;
+      const next: MonsterRecord = frac < 1 ? { ...rest, hpFrac: frac } : rest;
+      if (next.hpFrac !== m.hpFrac) changed = true;
+      return next;
+    });
+    if (changed) this.dispatch({ type: 'rosterSynced', roomId: state.id, monsters });
+  }
+
+  // ───────────────────────────── time & sleep ─────────────────────────────
+
+  /** A screen transition happened (it costs no time: the clock runs in real time). */
+  private afterTransition(fromRoomId: string): void {
+    this.prevRoomId = fromRoomId;
+    this.checkCurfew();
+  }
+
+  /**
+   * The clock runs while you play, except with a menu or panel open (like Stardew Valley). It's
+   * committed in CLOCK_STEP-minute steps so saves and the server aren't touched every second.
+   */
+  private runClock(dt: number): void {
+    if (this.ui.blocking) return;
+    this.clockAcc += dt * MINUTES_PER_SECOND;
+    if (this.clockAcc < CLOCK_STEP) return;
+    const minutes = Math.floor(this.clockAcc / CLOCK_STEP) * CLOCK_STEP;
+    this.clockAcc -= minutes;
+    this.passTime(minutes);
+  }
+
+  /**
+   * Rooms monsters neither enter nor leave while time runs: the one you're in and the one you just came
+   * from, so clearing your way forward never refills the room behind you from the one you're fighting in.
+   */
+  private quietRooms(): Set<string> {
+    const here = this.room.roomIdAt(this.player.x, this.player.y) ?? this.room.currentId;
+    return new Set([here, this.room.currentId, ...(this.prevRoomId ? [this.prevRoomId] : [])]);
+  }
+
+  /** Move the clock forward, resolving off-screen processes for every tick crossed. */
+  passTime(minutes: number): void {
+    const quiet = this.quietRooms();
+    const st = this.session.state;
+    const from = getClock(st);
+    const to = { day: from.day, minute: from.minute + minutes };
+    const before = this.barricadesSnapshot();
+    advanceClock(st, from, to, (c) => this.dispatch(c), undefined, quiet);
+    this.dispatch({ type: 'timePassed', minutes });
+    this.reconcileRoom(before);
+    if (!isSecure(st, this.room.info.id)) {
+      const warnings: [number, string][] = [
+        [MIDNIGHT_MINUTE, "It's midnight. Reach a secured room before 2 AM, or you'll pass out."],
+        [MIDNIGHT_MINUTE + 60, '1 AM. One hour left to reach a secured room.'],
+      ];
+      for (const [at, text] of warnings) if (from.minute < at && to.minute >= at) this.notify('warn', text);
+    }
+    this.checkCurfew();
+  }
+
+  /** Past midnight you fall asleep as soon as you're somewhere secure; at 2 AM anywhere else, you pass out. */
+  private checkCurfew(): void {
+    if (this.sleeping || this.dying > 0) return;
+    const c = getClock(this.session.state);
+    if (c.minute < MIDNIGHT_MINUTE) return;
+    if (isSecure(this.session.state, this.room.info.id)) this.beginSleep('collapse');
+    else if (c.minute >= PASS_OUT_MINUTE) this.beginSleep('passOut');
+  }
+
+  /** Sleep on the spot (phone button). */
+  sleepHere(): void {
+    if (this.sleeping || this.dying > 0) return;
+    if (!isSecure(this.session.state, this.room.info.id)) {
+      this.toast('You can only sleep somewhere secure');
+      return;
+    }
+    this.beginSleep('floor');
+  }
+
+  get asleep(): boolean {
+    return !!this.sleeping;
+  }
+
+  private beginSleep(kind: SleepKind, homeBed = false): void {
+    if (this.sleeping || this.dying > 0) return;
+    this.sleeping = { kind, homeBed, t: 0, applied: false };
+    this.player.swing = null;
+    this.ui.closeStorage();
+    this.ui.fade(true);
+  }
+
+  private updateSleep(dt: number): void {
+    const s = this.sleeping!;
+    s.t += dt;
+    if (!s.applied && s.t >= SLEEP_FADE) {
+      s.applied = true;
+      this.applySleep(s);
+    }
+    if (s.t >= SLEEP_FADE + SLEEP_HOLD) {
+      this.sleeping = null;
+      this.ui.fade(false);
+    }
+  }
+
+  /** Resolve the night: the hours slept and the day's end run their resolvers, then the clock jumps to the wake time. */
+  private applySleep(s: SleepState): void {
+    const st = this.session.state;
+    const from = getClock(st);
+    const to = wakeTime(from);
+    if (s.kind === 'passOut') {
+      this.dropCarriedHere();
+      this.respawnAtHome();
+    }
+    const before = this.barricadesSnapshot();
+    advanceClock(st, from, to, (c) => this.dispatch(c), from.day);
+    this.clockAcc = 0;
+    this.reconcileRoom(before);
+    // The night may have changed furniture here (deliveries, repossessions).
+    this.furnitureChanged();
+    const max = this.player.maxRedHalves();
+    const fullRest = s.homeBed || s.kind === 'passOut';
+    const hp = fullRest ? max : Math.max(this.session.player.redHalves, Math.min(max, Math.floor(max * AWAY_SLEEP_HEAL_FRACTION)));
+    this.dispatch({ type: 'slept', playerId: this.session.playerId, clock: to, redHalves: hp });
+    const how: Record<SleepKind, string> = {
+      bed: 'You slept in your own bed and feel fully rested.',
+      floor: 'You slept on the floor. Only partly rested.',
+      collapse: 'You collapsed from exhaustion at midnight. Only partly rested.',
+      passOut: 'You passed out in the Backrooms at 2 AM and woke up at home. Everything you carried is gone.',
+    };
+    this.notify(s.kind === 'passOut' ? 'urgent' : 'info', `Day ${to.day}. ${how[s.kind]}`, false);
+    this.ui.banner(`Day ${to.day}`, `${formatTime(to.minute, settings.clock24)}. ${how[s.kind]}`);
+  }
+
+  /** Post a phone message, optionally also as a toast. */
+  notify(severity: PhoneMessage['severity'], text: string, toast = true): void {
+    const c = getClock(this.session.state);
+    this.dispatch({ type: 'messagePosted', playerId: this.session.playerId, message: { id: uid(), day: c.day, minute: c.minute, severity, text } });
+    if (toast) this.toast(text);
   }
 
   // ───────────────────────────── combat ─────────────────────────────
 
   addEnemy(e: Enemy): Enemy {
+    e.roomId ||= this.room.roomIdAt(e.x, e.y) ?? this.room.currentId;
     this.room.enemies.push(e);
     this.entityLayer.addChild(e.view);
     return e;
@@ -544,28 +1120,18 @@ export class Game {
     if (e.dead) return;
     e.dead = true;
     this.burst(e.x, e.y, e.def.tint ?? 0xc04040, 12);
-    if (e.spawnId) this.dispatch({ type: 'enemyKilled', roomId: this.room.info.id, spawnId: e.spawnId });
+    if (e.monsterId) this.dispatch({ type: 'monsterKilled', roomId: e.roomId || this.room.currentId, monsterId: e.monsterId });
     if (drops && e.def.lootTable) this.spawnLoot(e);
     if (e.def.boss) {
       this.shake(0.6);
-      for (const x of this.room.enemies) if (!x.spawnId) this.killEnemy(x, false);
+      for (const x of this.room.enemies) if (!x.monsterId) this.killEnemy(x, false);
     }
   }
 
   private spawnLoot(e: Enemy): void {
     const table = registry.lootTables.get(e.def.lootTable!);
-    const results = enforceSingleTileFiller(rollLoot(table, this.rng));
-    for (const r of results) {
-      if (r.kind === 'furniture') {
-        const def = registry.furniture.get(r.furniture);
-        const spot = this.room.layout.findFurnitureSpot(def, Math.floor(e.x), Math.floor(e.y));
-        if (!spot) continue;
-        this.dispatch({ type: 'furniturePlaced', roomId: this.room.info.id, placement: { uid: uid(), defId: def.id, x: spot.x, y: spot.y, rot: 0 } });
-        this.furnitureChanged();
-        this.burst(spot.x + 0.5, spot.y + 0.5, 0xffe0a0, 10);
-        continue;
-      }
-      const inst = r.kind === 'gold' ? createItem('gold', uid(), { amount: r.amount }) : createItem(r.item);
+    for (const r of rollLoot(table, this.rng)) {
+      const inst = r.kind === 'cash' ? createItem('cash', uid(), { amount: r.amount }) : createItem(r.item);
       const pos = this.spillSpot(e.x, e.y);
       this.dropGroundItem(inst, pos.x, pos.y, { x: e.x, y: e.y });
     }
@@ -584,8 +1150,11 @@ export class Game {
 
   dropGroundItem(inst: ItemInstance, x: number, y: number, from?: { x: number; y: number }): GroundItemEntity {
     const g = { uid: uid(), x, y, item: inst };
-    this.dispatch({ type: 'groundItemAdded', roomId: this.room.info.id, item: g });
-    return this.addGroundItem(new GroundItemEntity(structuredClone(g), from));
+    const roomId = this.room.roomIdAt(x, y) ?? this.room.currentId;
+    this.dispatch({ type: 'groundItemAdded', roomId, item: g });
+    const it = new GroundItemEntity(structuredClone(g), from);
+    it.roomId = roomId;
+    return this.addGroundItem(it);
   }
 
   private addGroundItem(e: GroundItemEntity): GroundItemEntity {
@@ -637,40 +1206,49 @@ export class Game {
     return healed;
   }
 
-  addGold(n: number): void {
+  addCash(n: number): void {
     const p = this.session.player;
-    this.dispatch({ type: 'playerUpdated', playerId: p.id, patch: { gold: p.gold + n } });
+    this.dispatch({ type: 'playerUpdated', playerId: p.id, patch: { cash: p.cash + n } });
+  }
+
+  /** Carried furniture is set down where you fell (it never leaves the world). */
+  private dropCarriedHere(): void {
+    const p = this.session.player;
+    if (!p.carrying) return;
+    const def = registry.furniture.get(p.carrying.defId);
+    const spot = this.room.layout.findFurnitureSpot(def, Math.floor(this.player.x), Math.floor(this.player.y), p.carrying.rot);
+    if (spot) this.dispatch({ type: 'furniturePlaced', roomId: this.room.roomIdAt(spot.x, spot.y) ?? this.room.currentId, placement: { ...p.carrying, x: spot.x, y: spot.y } });
   }
 
   private killPlayer(): void {
-    const p = this.session.player;
-    // Carried furniture is set down where you fell (it never leaves the world).
-    if (p.carrying) {
-      const def = registry.furniture.get(p.carrying.defId);
-      const spot = this.room.layout.findFurnitureSpot(def, Math.floor(this.player.x), Math.floor(this.player.y), p.carrying.rot);
-      if (spot) this.dispatch({ type: 'furniturePlaced', roomId: this.room.info.id, placement: { ...p.carrying, x: spot.x, y: spot.y } });
-    }
+    this.dropCarriedHere();
     this.dying = 1.6;
     this.burst(this.player.x, this.player.y, 0xd8323c, 24);
     this.player.view.visible = false;
-    this.ui.banner('You died', 'Everything you carried is lost. Your gold and property remain.');
+    this.ui.banner('You died', 'Everything you carried is lost. Your cash and property remain.');
   }
 
   private respawn(): void {
+    this.respawnAtHome();
+    this.player.iframes = 1.5;
+    this.player.view.visible = true;
+    this.checkCurfew();
+  }
+
+  /** Death: lose what you carried and reappear at home. No time passes. */
+  private respawnAtHome(): void {
     const st = this.session.state;
-    const floor1 = st.floors[1]!;
-    const e = entryPoint(floor1);
+    const home = st.floors[APARTMENT_FLOOR]!;
+    const e = entryPoint(home);
     this.dispatch({
       type: 'playerDied',
       playerId: this.session.playerId,
-      respawn: { floor: 1, roomId: e.roomId, x: e.x, y: e.y },
+      respawn: { floor: APARTMENT_FLOOR, roomId: e.roomId, x: e.x, y: e.y },
       redHalves: this.session.player.baseRedMaxHalves,
     });
     this.player.refreshStats();
     this.player.x = e.x;
     this.player.y = e.y;
-    this.player.iframes = 1.5;
-    this.player.view.visible = true;
     this.loadRoom(e.roomId, false);
   }
 
@@ -706,8 +1284,9 @@ export class Game {
   }
 
   liftFurniture(f: FurniturePlacement): void {
-    if (!this.room.owned) return;
-    this.dispatch({ type: 'furnitureRemoved', roomId: this.room.info.id, uid: f.uid });
+    const at = this.room.layout.findFurniture(f.uid);
+    if (!at || registry.furniture.get(f.defId).fixed) return;
+    this.dispatch({ type: 'furnitureRemoved', roomId: at.room.info.id, uid: f.uid });
     this.dispatch({ type: 'playerUpdated', playerId: this.session.playerId, patch: { carrying: structuredClone(f) } });
     this.furnitureChanged();
     this.ui.closeStorage();
@@ -716,19 +1295,141 @@ export class Game {
   placeCarried(x: number, y: number): void {
     const c = this.session.player.carrying;
     if (!c) return;
-    this.dispatch({ type: 'furniturePlaced', roomId: this.room.info.id, placement: { ...c, x, y } });
+    this.dispatch({ type: 'furniturePlaced', roomId: this.room.roomIdAt(x, y) ?? this.room.currentId, placement: { ...c, x, y } });
     this.dispatch({ type: 'playerUpdated', playerId: this.session.playerId, patch: { carrying: null } });
     this.furnitureChanged();
+    // Your own rooms are on your own grid: say so when something you set down has nothing to run on.
+    const needs = registry.furniture.get(c.defId).utility?.needs;
+    if (needs && !this.supplied({ ...c, x, y })) {
+      this.toast(needs === 'power'
+        ? 'No power here. Run wire from it to a generator (Wire Spool).'
+        : 'No water here. Run pipe from it to a water main (Pipe Bundle).', 'utility');
+    }
+  }
+
+  // ───────────────────────────── utilities ─────────────────────────────
+
+  /** The floor's utility networks, recomputed whenever the world changes. */
+  utilityNetsNow(): UtilityNets {
+    const key = `${this.floorIndex}:${this.session.changes}`;
+    if (key !== this.netsKey || !this.nets) {
+      this.nets = utilityNets(this.session.state, this.floorIndex);
+      this.netsKey = key;
+    }
+    return this.nets;
+  }
+
+  /** Whether a placed (or about-to-be-placed) piece of furniture has the power / water it needs. */
+  supplied(f: FurniturePlacement): boolean {
+    return fixtureSupplied(this.session.state, this.utilityNetsNow(), this.room.roomIdAt(f.x, f.y) ?? this.room.currentId, f);
+  }
+
+  /** Lay a pipe / wire segment, or repair the faulty one on that tile. */
+  layUtility(x: number, y: number, kind: UtilityKind): void {
+    const roomId = this.room.roomIdAt(x, y) ?? this.room.currentId;
+    const seg = this.session.state.rooms[roomId]?.utilities?.[tileKey(x, y)]?.[kind];
+    if (seg?.fault) {
+      this.dispatch({ type: 'utilityFault', roomId, x, y, kind, fault: false });
+      this.burst(x + 0.5, y + 0.5, kind === 'power' ? 0xffd040 : 0x60a0ff, 10);
+      this.toast(kind === 'power' ? 'Wire fixed' : 'Pipe fixed');
+    } else {
+      this.dispatch({ type: 'utilityLaid', roomId, x, y, kind });
+    }
+  }
+
+  /** The utility kind the player is holding a tool for (x-ray), if any. */
+  private heldUtility(): UtilityKind | null {
+    const hb = this.session.player.hotbar;
+    for (const it of [hb.main, hb.off]) {
+      const d = it && itemDef(it);
+      if (d?.kind === 'tool' && d.action.id === 'layUtility') return d.action.params?.kind as UtilityKind;
+    }
+    return null;
+  }
+
+  /**
+   * Utilities on screen: the x-ray of the held tool's kind (live runs bright, dead ones grey, faults as
+   * a red cross; fixtures and sources outlined green when working, red when not), and the symptoms of
+   * faults, always (a puddle under a broken pipe, sparks off a broken wire).
+   */
+  private drawUtilities(): void {
+    const nets = this.utilityNetsNow();
+    const active = new Set(this.room.layout.activeIds);
+    const T = TILE_PX;
+    // Symptoms: redrawn every frame (sparks flicker).
+    const sym = this.symptoms.clear();
+    for (const kind of UTILITY_KINDS) {
+      for (const [k, s] of nets[kind].segments) {
+        if (!s.fault || !active.has(s.roomId)) continue;
+        const [x, y] = k.split(',').map(Number) as [number, number];
+        if (kind === 'water') {
+          sym.ellipse((x + 0.5) * T, (y + 0.65) * T, T * 0.55, T * 0.32).fill({ color: 0x3a6ab0, alpha: 0.55 });
+          sym.ellipse((x + 0.4) * T, (y + 0.55) * T, T * 0.18, T * 0.08).fill({ color: 0xa0c8ff, alpha: 0.5 });
+        } else if (Math.random() < 0.45) {
+          for (let i = 0; i < 3; i++) {
+            const a = Math.random() * Math.PI * 2, r = 2 + Math.random() * 5;
+            const cx = (x + 0.5) * T, cy = (y + 0.5) * T;
+            sym.moveTo(cx, cy).lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+          }
+          sym.stroke({ color: 0xfff080, width: 1, alpha: 0.95 });
+        }
+      }
+    }
+    // X-ray: only while holding a pipe / wire tool; redrawn when something changes.
+    const kind = this.heldUtility();
+    const key = kind ? `${kind}:${this.netsKey}:${[...active].join(',')}` : '';
+    if (key === this.xrayKey) return;
+    this.xrayKey = key;
+    const g = this.xray.clear();
+    if (!kind) return;
+    const net = nets[kind];
+    const live = kind === 'power' ? 0xffd040 : 0x48a8ff;
+    for (const [k, s] of net.segments) {
+      if (!active.has(s.roomId)) continue;
+      const [x, y] = k.split(',').map(Number) as [number, number];
+      const cx = (x + 0.5) * T, cy = (y + 0.5) * T;
+      const color = s.fault ? 0xff4040 : net.served.has(k) ? live : 0x8a8a8a;
+      for (const [dx, dy] of [[1, 0], [0, 1]] as const) {
+        const n = net.segments.get(tileKey(x + dx, y + dy));
+        if (n && !n.fault && !s.fault) g.moveTo(cx, cy).lineTo(cx + dx * T, cy + dy * T).stroke({ color, width: 3, alpha: 0.9 });
+      }
+      g.rect(cx - 2.5, cy - 2.5, 5, 5).fill({ color, alpha: 0.95 });
+      if (s.fault) g.moveTo(cx - 4, cy - 4).lineTo(cx + 4, cy + 4).moveTo(cx + 4, cy - 4).lineTo(cx - 4, cy + 4).stroke({ color: 0xff2020, width: 2 });
+    }
+    for (const f of this.room.layout.furniture()) {
+      const u = registry.furniture.get(f.defId).utility;
+      if (u?.provides !== kind && u?.needs !== kind) continue;
+      const { w, h } = footprint(registry.furniture.get(f.defId), f.rot);
+      const ok = u.provides === kind || this.supplied(f);
+      g.rect(f.x * T + 0.5, f.y * T + 0.5, w * T - 1, h * T - 1).stroke({ color: ok ? 0x60e060 : 0xff5050, width: 1.5, alpha: 0.9 });
+    }
   }
 
   private furnitureChanged(): void {
     this.room.layout.rebuildFurniture();
-    this.room.renderer.syncFurniture();
+    this.room.syncFurniture();
     this.shadows.rebuild(this.room.layout, this.app.renderer);
   }
 
+  /** Click on furniture: its `use` behaviour if it has one, otherwise containers open. */
+  useFurniture(furnitureUid: string): void {
+    const f = this.room.layout.findFurniture(furnitureUid)?.f;
+    if (!f) return;
+    const def = registry.furniture.get(f.defId);
+    if (!def.use) return this.openStorage(furnitureUid);
+    const fp = footprint(def, f.rot);
+    if (Math.hypot(f.x + fp.w / 2 - this.player.x, f.y + fp.h / 2 - this.player.y) > 2.6) return this.toast('Too far away');
+    furnitureUses[def.use.id]?.(this, f, def.use.params ?? {});
+  }
+
+  /** The apartment bed: the one place you sleep fully rested. */
+  sleepInHomeBed(): void {
+    if (!isSecure(this.session.state, this.room.info.id)) return this.toast('You can only sleep somewhere secure');
+    this.ui.confirm('Go to bed?', "Sleep until morning in your own bed. You'll wake up fully rested.", 'Sleep', () => this.beginSleep('bed', true));
+  }
+
   openStorage(furnitureUid: string): void {
-    const f = this.room.layout.state.furniture.find((x) => x.uid === furnitureUid);
+    const f = this.room.layout.findFurniture(furnitureUid)?.f;
     if (!f) return;
     const def = registry.furniture.get(f.defId);
     const cx = f.x + def.size.w / 2, cy = f.y + def.size.h / 2;
@@ -740,32 +1441,70 @@ export class Game {
   }
 
   setContainer(furnitureUid: string, contents: (ItemInstance | null)[]): void {
-    const f = this.room.layout.state.furniture.find((x) => x.uid === furnitureUid);
-    if (!f) return;
-    this.dispatch({ type: 'furnitureUpdated', roomId: this.room.info.id, placement: { ...f, contents } });
+    const at = this.room.layout.findFurniture(furnitureUid);
+    if (!at) return;
+    this.dispatch({ type: 'furnitureUpdated', roomId: at.room.info.id, placement: { ...at.f, contents } });
   }
 
-  useTool(x: number, y: number, tool: { action: ToolAction; params: Record<string, unknown> }, cost: number): void {
+  useTool(x: number, y: number, tool: { action: ToolAction; params: Record<string, unknown> }, cost: number, slot: 'main' | 'off' = 'main'): void {
     const hb = structuredClone(this.session.player.hotbar);
-    const item = hb.main!;
-    tool.action.apply(this, x, y, tool.params, item);
+    const item = hb[slot]!;
+    const used = structuredClone(item);
     item.data.count = countLeft(item) - cost;
     if (countLeft(item) <= 0) {
-      this.toast(`Your ${itemDef(item).name} is used up`);
-      hb.main = null;
+      // A dual-use tool stays a weapon; it just can't renovate any more.
+      if (itemDef(item).kind === 'weapon') this.toast(`Your ${itemDef(item).name} is too worn to renovate with`);
+      else {
+        this.toast(`Your ${itemDef(item).name} is used up`);
+        hb[slot] = null;
+      }
     }
     this.setHotbar(hb);
+    // Applied after the hotbar update, since some actions hand items back (prying off a barricade).
+    tool.action.apply(this, x, y, tool.params, used);
+  }
+
+  /** Tear a barricade down by hand: it's lost. */
+  breakBarricade(x: number, y: number): void {
+    this.setBarricade(x, y, null);
+    this.burst(x + 0.5, y + 0.5, 0x9a7a5a, 14);
+    this.shake(0.15);
+    this.toast('You tore the barricade down');
+  }
+
+  /** Pry a barricade off whole: it comes back as a kit with whatever HP it had left. */
+  pryBarricade(x: number, y: number): void {
+    const b = this.room.layout.barricadeAt(x, y);
+    if (!b) return;
+    this.setBarricade(x, y, null);
+    const kit = barricadeKit(b.tier);
+    if (!kit) return;
+    const max = BARRICADE_TIERS[b.tier]!.hp;
+    const inst = createItem(kit, uid(), b.hp < max ? { count: 1, hp: Math.round(b.hp * 10) / 10 } : { count: 1 });
+    const hb = structuredClone(this.session.player.hotbar);
+    if (addToHotbar(hb, inst)) this.setHotbar(hb);
+    else this.dropGroundItem(inst, this.player.x, this.player.y);
+    this.toast(`Pried off: ${itemDef(inst).name}${b.hp < max ? ` (${Math.round((b.hp / max) * 100)}%)` : ''}`);
+  }
+
+  /** Break a wall you built with your bare hands (the slow way out of a sealed room). */
+  breakBuiltWall(x: number, y: number): void {
+    this.setTile(x, y, null);
+    this.burst(x + 0.5, y + 0.5, 0xd8cfbf, 14);
+    this.shake(0.25);
   }
 
   setTile(x: number, y: number, obstacle: string | null): void {
-    this.dispatch({ type: 'tileSet', roomId: this.room.info.id, x, y, obstacle });
-    this.room.renderer.rebuild();
+    const id = this.room.roomIdAt(x, y) ?? this.room.currentId;
+    this.dispatch({ type: 'tileSet', roomId: id, x, y, obstacle });
+    this.room.rebuildRoom(id);
     this.rebuildStaticLights();
   }
 
   setSurface(x: number, y: number, layer: 'floor' | 'wall', surface: string | null): void {
-    this.dispatch({ type: 'surfaceSet', roomId: this.room.info.id, x, y, layer, surface });
-    this.room.renderer.rebuild();
+    const id = this.room.roomIdAt(x, y) ?? this.room.currentId;
+    this.dispatch({ type: 'surfaceSet', roomId: id, x, y, layer, surface });
+    this.room.rebuildRoom(id);
   }
 
   // ───────────────────────────── fx / feedback ─────────────────────────────
@@ -833,7 +1572,7 @@ export class Game {
       const all = registry.items.all().filter((d) => d.kind !== 'pickup');
       this.dropItem(createItem(all[Math.floor(Math.random() * all.length)]!.id));
     }
-    if (i.keyPressed('f3')) this.addGold(50);
+    if (i.keyPressed('f3')) this.addCash(50);
     if (i.keyPressed('f4')) for (const e of this.room.enemies) this.killEnemy(e, true);
     if (i.keyPressed('f6')) this.healPlayer(99);
     if (i.keyPressed('f7')) {
@@ -846,6 +1585,8 @@ export class Game {
       }
     }
     if (i.keyPressed('f8')) this.changeFloor(1);
+    if (i.keyPressed('shift+f10')) this.passTime(Math.max(0, 23 * 60 + 45 - getClock(this.session.state).minute));
+    else if (i.keyPressed('f10')) this.passTime(60);
     if (i.keyPressed('f9') && confirm('Reset your world? This deletes all progress.')) this.session.resetWorld();
   }
 }

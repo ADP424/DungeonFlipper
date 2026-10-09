@@ -1,6 +1,6 @@
 import { Container, Graphics, Sprite } from 'pixi.js';
 import {
-  Stats, TILE_PX, countLeft, footprint, itemDef, registry,
+  BARRICADE_TIERS, Stats, TILE_PX, countLeft, footprint, itemDef, registry, structuralWallTarget,
   type FurniturePlacement, type ItemInstance, type MeleeAttackDef, type RangedAttackDef,
 } from '@df/shared';
 import { tex } from '../../engine/assets';
@@ -12,6 +12,11 @@ import type { Game } from '../Game';
 import { Actor } from './Entity';
 
 const REACH = 2.25;
+/** Seconds to break a wall you built by hand (no tool). */
+const BREAK_LOW_WALL = 10;
+const BREAK_TALL_WALL = 15;
+
+type HandTool = NonNullable<ReturnType<typeof actionFor>>;
 const LIFT_HOLD = 0.4;
 
 export class Player extends Actor {
@@ -30,7 +35,11 @@ export class Player extends Actor {
   private ghost: Container | null = null;
   private ghostKey = '';
   ghostSpot: { x: number; y: number; valid: boolean } | null = null;
+  /** The tile a held run-laying tool last worked on, per hand (null when not held). */
+  private runTile: Record<'main' | 'off', string | null> = { main: null, off: null };
   private hold: { uid: string; t: number } | null = null;
+  /** Holding the button on a barricade to tear it down: which door tile, and for how long. */
+  private breaking: { key: string; t: number } | null = null;
   lastTile = '';
 
   constructor(private game: Game) {
@@ -130,46 +139,181 @@ export class Player extends Actor {
       if (input.primary) {
         this.hold.t += dt;
         if (this.hold.t >= LIFT_HOLD) {
-          const f = g.room.layout.state.furniture.find((x) => x.uid === this.hold!.uid);
+          const f = g.room.layout.findFurniture(this.hold!.uid)?.f;
           this.hold = null;
           if (f) g.liftFurniture(f);
         }
       } else {
         const uid = this.hold.uid;
         this.hold = null;
-        g.openStorage(uid);
+        g.useFurniture(uid);
       }
       return;
     }
-    // In owned rooms, clicking furniture lifts it (whatever is in your hands); in uncleared
-    // rooms clicks fall through to your weapon so you can still fight next to dropped furniture.
-    if (target && g.room.owned) {
+    // Tenants and applicants: click to talk (and haggle).
+    const npc = g.npcUnderCursor();
+    if (npc && Math.hypot(npc.x - this.x, npc.y - this.y) < 3) {
+      this.highlight.circle(npc.x * TILE_PX, (npc.y - 0.2) * TILE_PX, 7).stroke({ color: 0x80c0ff, width: 1, alpha: 0.9 });
+      if (input.primaryPressed) g.ui.openTenant(npc.tenantId);
+      return;
+    }
+    // Clicking furniture lifts it, anywhere. With monsters alive in its room and a weapon in hand,
+    // clicks go to the weapon instead, so you can still fight next to furniture. Things that share a tile
+    // with furniture (flooring, pipe, wire) win when the tool in hand can do something there.
+    const armed = !!hb.main && itemDef(hb.main).kind === 'weapon';
+    const handHere = this.handTool(hb.main);
+    const toolWorksHere = !!handHere && !!hb.main && this.toolCheck(handHere, hb.main).ok;
+    if (target && !toolWorksHere && (!armed || g.room.calmAt(target.x, target.y))) {
       const def = registry.furniture.get(target.defId);
       this.drawTileOutline(target.x, target.y, footprint(def, target.rot), 0x80ff80);
       if (input.primaryPressed) {
-        if (def.container) this.hold = { uid: target.uid, t: 0 };
+        if (def.fixed) g.useFurniture(target.uid);
+        else if (def.container || def.use) this.hold = { uid: target.uid, t: 0 };
         else g.liftFurniture(target);
       }
       return;
     }
 
-    // Main hand: tools/rolls act on a tile; weapons attack.
-    const tool = actionFor(hb.main);
-    if (tool && hb.main) {
-      const t = this.toolTile();
-      const check = g.room.owned ? tool.action.check(g, t.x, t.y, tool.params, hb.main) : { ok: false, cost: 0, reason: 'You can only renovate rooms you own' };
-      const enough = check.cost <= countLeft(hb.main);
-      this.drawTileOutline(t.x, t.y, { w: 1, h: 1 }, check.ok && enough ? 0x80ff80 : 0xff6060);
-      if (input.primaryPressed) {
-        if (!check.ok) g.toast(check.reason ?? "Can't do that");
-        else if (!enough) g.toast('Not enough left for that');
-        else g.useTool(t.x, t.y, tool, check.cost);
-      }
-    } else if (hb.main && input.primary && this.cd.main <= 0) {
-      this.attackWith(hb.main, 'main');
+    // Either hand: tools/rolls act on a tile; weapons attack. Left click is the main hand, right click
+    // the off hand. Dual-use tools renovate where nothing is alive in the targeted room, and fight otherwise.
+    const mainTool = this.handTool(hb.main);
+    const offTool = this.handTool(hb.off);
+
+    // A heavy tool on a structural wall between two rooms: hold to knock it through.
+    const wall = this.structuralTarget(hb.main);
+    if (wall) {
+      this.holdTo(`wall:${wall.x},${wall.y}`, wall.x, wall.y, 1.5, input.primary, () => g.demolishWall(wall.x, wall.y), dt);
+      this.useHand('off', offTool, input.secondaryPressed, input.secondary);
+      return;
     }
-    const offDef = hb.off ? itemDef(hb.off) : undefined;
-    if (hb.off && offDef?.kind === 'weapon' && input.secondary && this.cd.off <= 0) this.attackWith(hb.off, 'off');
+
+    // A wall you built, under the cursor in a quiet room: holding the main button breaks it by hand,
+    // slowly, unless the main hand can demolish it properly. Nobody can wall themselves in for good.
+    const bw = this.builtWallTarget();
+    if (bw && !(mainTool && this.toolCheck(mainTool, hb.main!).ok)) {
+      this.holdTo(`bw:${bw.x},${bw.y}`, bw.x, bw.y, bw.secs, input.primary, () => g.breakBuiltWall(bw.x, bw.y), dt);
+      this.useHand('off', offTool, input.secondaryPressed, input.secondary);
+      return;
+    }
+
+    // A barricade under the cursor: holding the main button tears it down (a second per tier), unless
+    // the main hand can work on it directly (a kit repairs it, a crowbar pries it off whole).
+    this.drawBarricadeHealth();
+    const bt = this.barricadeTarget();
+    const mainWorksOnIt = !!bt && !!mainTool && this.toolCheck(mainTool, hb.main!).ok;
+    if (bt && !mainWorksOnIt) {
+      this.holdTo(`${bt.x},${bt.y}`, bt.x, bt.y, bt.tier, input.primary, () => g.breakBarricade(bt.x, bt.y), dt);
+    } else {
+      this.breaking = null;
+      this.useHand('main', mainTool, input.primaryPressed, input.primary);
+    }
+    this.useHand('off', offTool, input.secondaryPressed, input.secondary);
+  }
+
+  /** Hold the main button on a tile for `secs` to do something (tear down, knock through), with a progress fill. */
+  private holdTo(key: string, x: number, y: number, secs: number, held: boolean, done: () => void, dt: number): void {
+    if (held) {
+      this.breaking = this.breaking?.key === key ? { key, t: this.breaking.t + dt } : { key, t: 0 };
+      if (this.breaking.t >= secs) {
+        this.breaking = null;
+        done();
+      }
+    } else {
+      this.breaking = null;
+    }
+    const k = this.breaking ? this.breaking.t / secs : 0;
+    this.drawTileOutline(x, y, { w: 1, h: 1 }, 0xffb040);
+    if (k > 0) this.highlight.rect(x * TILE_PX + 1, (y + 1 - k) * TILE_PX, TILE_PX - 2, k * TILE_PX - 1).fill({ color: 0xffb040, alpha: 0.45 });
+  }
+
+  /**
+   * A player-built wall under the cursor, within reach, in a room with nothing alive: what it takes to
+   * break it by hand (low walls 10 s, tall 15 s). Dungeon walls (template and boundary) never qualify.
+   */
+  private builtWallTarget(): { x: number; y: number; secs: number } | null {
+    const g = this.game;
+    const m = g.mouseWorld();
+    const x = Math.floor(m.x), y = Math.floor(m.y);
+    if (Math.hypot(x + 0.5 - this.x, y + 0.5 - this.y) > REACH || !g.room.calmAt(x, y)) return null;
+    const L = g.room.layout.roomAt(x, y);
+    const placed = L?.state.tileOverrides[`${x},${y}`];
+    if (typeof placed !== 'string') return null;
+    const o = registry.obstacles.tryGet(placed);
+    if (!o?.isWall) return null;
+    return { x, y, secs: o.height === 'short' ? BREAK_LOW_WALL : BREAK_TALL_WALL };
+  }
+
+  /** A structural wall under the cursor that the heavy tool in hand may knock through. */
+  private structuralTarget(item: ItemInstance | null): { x: number; y: number } | null {
+    if (!item) return null;
+    const def = itemDef(item);
+    if (def.kind !== 'weapon' || !def.tool?.action.params?.structural || countLeft(item) < 2) return null;
+    const g = this.game;
+    const m = g.mouseWorld();
+    const x = Math.floor(m.x), y = Math.floor(m.y);
+    if (Math.hypot(x + 0.5 - this.x, y + 0.5 - this.y) > REACH || !g.room.layout.isStructural(x, y) || !g.room.calmAt(x, y)) return null;
+    const L = g.room.layout.roomAt(x, y);
+    return L && structuralWallTarget(g.session.state, L.info, x, y) ? { x, y } : null;
+  }
+
+  /**
+   * The renovation action of an item in hand right now, or null when it fights (or does nothing).
+   * Dual-use tools renovate when nothing is alive in the targeted tile's room.
+   */
+  private handTool(item: ItemInstance | null): HandTool | null {
+    const t = this.toolTile();
+    return actionFor(item, this.game.room.calmAt(t.x, t.y));
+  }
+
+  /** Whether a hand's tool can act on the targeted tile (and why not). */
+  private toolCheck(tool: HandTool, item: ItemInstance): { ok: boolean; cost: number; reason?: string; x: number; y: number } {
+    const g = this.game;
+    const t = this.toolTile();
+    const check = tool.action.check(g, t.x, t.y, tool.params, item);
+    if (check.ok && check.cost > countLeft(item)) return { ok: false, cost: check.cost, reason: 'Not enough left for that', ...t };
+    return { ...check, ...t };
+  }
+
+  private useHand(slot: 'main' | 'off', tool: HandTool | null, pressed: boolean, held: boolean): void {
+    const g = this.game;
+    const item = this.state.hotbar[slot];
+    if (!item) return;
+    if (tool) {
+      const c = this.toolCheck(tool, item);
+      this.drawTileOutline(c.x, c.y, { w: 1, h: 1 }, c.ok ? 0x80ff80 : 0xff6060);
+      // Tools that lay runs (pipe, wire) keep going while held, a tile at a time; only the click explains a refusal.
+      const tile = `${c.x},${c.y}`;
+      const dragged = held && !!tool.action.repeat && this.runTile[slot] !== null && this.runTile[slot] !== tile;
+      if (pressed || dragged) {
+        if (c.ok) g.useTool(c.x, c.y, tool, c.cost, slot);
+        else if (pressed) g.toast(c.reason ?? "Can't do that");
+        this.runTile[slot] = tile;
+      }
+      if (!held) this.runTile[slot] = null;
+    } else if (itemDef(item).kind === 'weapon' && held && this.cd[slot] <= 0) {
+      this.attackWith(item, slot);
+    }
+  }
+
+  /** Hovering a barricade (at any distance) shows its durability above it. */
+  private drawBarricadeHealth(): void {
+    const m = this.game.mouseWorld();
+    const x = Math.floor(m.x), y = Math.floor(m.y);
+    const b = this.game.room.layout.barricadeAt(x, y);
+    if (!b) return;
+    const k = Math.max(0, Math.min(1, b.hp / BARRICADE_TIERS[b.tier]!.hp));
+    const px = x * TILE_PX + 1, py = y * TILE_PX - 4, w = TILE_PX - 2;
+    this.highlight.rect(px - 0.5, py - 0.5, w + 1, 3).fill({ color: 0x000000, alpha: 0.7 });
+    this.highlight.rect(px, py, w * k, 2).fill({ color: k > 0.66 ? 0x7ad05a : k > 0.33 ? 0xe0b040 : 0xe05040 });
+  }
+
+  /** A barricade on a door tile under the cursor, within reach. */
+  private barricadeTarget(): { x: number; y: number; tier: number } | null {
+    const m = this.game.mouseWorld();
+    const x = Math.floor(m.x), y = Math.floor(m.y);
+    if (Math.hypot(x + 0.5 - this.x, y + 0.5 - this.y) > REACH) return null;
+    const b = this.game.room.layout.barricadeAt(x, y);
+    return b ? { x, y, tier: b.tier } : null;
   }
 
   private attackWith(item: ItemInstance, slot: 'main' | 'off'): void {
@@ -231,13 +375,17 @@ export class Player extends Actor {
   private furnitureTarget(): FurniturePlacement | undefined {
     const L = this.game.room.layout;
     const m = this.game.mouseWorld();
-    const f = L.furnitureAtTile(Math.floor(m.x), Math.floor(m.y));
+    const mx = Math.floor(m.x), my = Math.floor(m.y);
+    const f = L.furnitureAtTile(mx, my);
     if (f) {
       const def = registry.furniture.get(f.defId);
       const { w, h } = footprint(def, f.rot);
       const nx = Math.max(f.x, Math.min(this.x, f.x + w)), ny = Math.max(f.y, Math.min(this.y, f.y + h));
       if (Math.hypot(nx - this.x, ny - this.y) <= REACH - 0.5) return f;
     }
+    // Pointing at an empty tile within reach means that tile (for the tool in hand), not the
+    // furniture in front of you; the front tile only stands in when the cursor is out of reach.
+    if (Math.hypot(mx + 0.5 - this.x, my + 0.5 - this.y) <= REACH) return undefined;
     const t = this.frontTile();
     return L.furnitureAtTile(t.x, t.y);
   }
@@ -262,7 +410,7 @@ export class Player extends Actor {
     }
     // Don't drop it on our own feet.
     const overlapsMe = this.x + this.radius > x0 && this.x - this.radius < x0 + w && this.y + this.radius > y0 && this.y - this.radius < y0 + h;
-    const valid = g.room.owned && !overlapsMe && g.room.layout.canPlaceFurniture(def, x0, y0, c.rot);
+    const valid = !overlapsMe && g.room.layout.canPlaceFurniture(def, x0, y0, c.rot);
     this.ghostSpot = { x: x0, y: y0, valid };
     const key = `${c.defId}:${c.rot}`;
     if (this.ghostKey !== key) {
@@ -278,7 +426,7 @@ export class Player extends Actor {
     this.drawTileOutline(x0, y0, { w, h }, valid ? 0x80ff80 : 0xff6060);
     if (place) {
       if (valid) g.placeCarried(x0, y0);
-      else g.toast(g.room.owned ? "It won't fit there" : 'You can only furnish rooms you own');
+      else g.toast("It won't fit there");
     }
   }
 

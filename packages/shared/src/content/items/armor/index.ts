@@ -1,10 +1,10 @@
 import type { ArmorDef } from '../../types';
-import leatherArmor from './leather_armor';
-import chainmail from './chainmail';
-import plateArmor from './plate_armor';
+import hoodie from './hoodie';
+import hiVisVest from './hi_vis_vest';
+import riotVest from './riot_vest';
 
 export default [
-  leatherArmor,
-  chainmail,
-  plateArmor,
+  hoodie,
+  hiVisVest,
+  riotVest,
 ] satisfies ArmorDef[];

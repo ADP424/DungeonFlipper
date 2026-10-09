@@ -1,14 +1,21 @@
-import { RoomLayout } from '../world/layout';
-import { placeMapFurniture } from '../world/generator';
-import type { FurniturePlacement, ItemInstance, PlayerState, RoomInfo, RoomState, WorldState } from '../world/types';
+import type { FurniturePlacement, ItemInstance, PlayerState, RoomState, WorldState } from '../world/types';
 
 /** Bump when the persisted shape changes, and add a migration below. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 8;
+
+/**
+ * Saves older than this can't be upgraded and are discarded (a new game starts). v7 renamed every
+ * content id to the Backrooms theme; while the game is in development, saves are wiped between
+ * roadmap phases rather than carried through migrations.
+ */
+export const MIN_SAVE_VERSION = 8;
+
+export class SaveTooOldError extends Error {}
 
 type Migration = (state: Record<string, unknown>) => Record<string, unknown>;
 
-/** Visit every item slot in a world (hotbars, carried and placed containers, ground items). */
-function rewriteItems(w: WorldState, fn: (it: ItemInstance) => ItemInstance | null): void {
+/** Visit every item slot in a world (hotbars, carried and placed containers, ground items). For migrations. */
+export function rewriteItems(w: WorldState, fn: (it: ItemInstance) => ItemInstance | null): void {
   const list = (items: (ItemInstance | null)[] | undefined) => items?.map((it) => (it ? fn(it) : null));
   const placement = (f: FurniturePlacement | null) => {
     if (f?.contents) f.contents = list(f.contents)!;
@@ -31,32 +38,14 @@ function rewriteItems(w: WorldState, fn: (it: ItemInstance) => ItemInstance | nu
   }
 }
 
-/** migrations[n] upgrades a version-n save to version n+1. */
-const migrations: Record<number, Migration> = {
-  // v2: shields removed; tool/roll `halves` became whole-unit `count`; braziers became furniture.
-  1: (raw) => {
-    const w = raw as unknown as WorldState;
-    rewriteItems(w, (it) => {
-      if (it.defId === 'wooden_shield' || it.defId === 'tower_shield') return null;
-      if (typeof it.data.halves === 'number') {
-        it.data.count = it.data.halves;
-        delete it.data.halves;
-      }
-      return it;
-    });
-    for (const floor of Object.values(w.floors ?? {})) {
-      for (const info of Object.values(floor.rooms) as RoomInfo[]) {
-        const state = w.rooms?.[info.id];
-        if (state) placeMapFurniture(new RoomLayout(info, state));
-      }
-    }
-    return raw;
-  },
-};
+/** migrations[n] upgrades a version-n save to version n+1 (n ≥ MIN_SAVE_VERSION). */
+const migrations: Record<number, Migration> = {};
 
+/** Upgrade a raw save to the current schema. Throws `SaveTooOldError` for saves older than MIN_SAVE_VERSION. */
 export function migrate(raw: Record<string, unknown>): WorldState {
   let state = raw;
   let v = typeof state.schemaVersion === 'number' ? state.schemaVersion : 1;
+  if (v < MIN_SAVE_VERSION) throw new SaveTooOldError(`Save version ${v} is older than ${MIN_SAVE_VERSION}`);
   while (v < SCHEMA_VERSION) {
     const m = migrations[v];
     if (!m) throw new Error(`No migration from save version ${v}`);

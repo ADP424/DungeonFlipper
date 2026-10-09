@@ -1,36 +1,38 @@
 import type { RoomTemplateDef } from '../types';
-import safeRoom from './safe_room';
+import level1Lobby from './level1_lobby';
+import apartment from './apartment';
 import stairsDownRoom from './stairs_down_room';
-import stairsUpRoom from './stairs_up_room';
-import bossBoneWarden from './boss_bone_warden';
+import lowerLobby from './lower_lobby';
+import bossFacilityManager from './boss_facility_manager';
 import pillars from './pillars';
-import spikeCorridor from './spike_corridor';
-import pitIsland from './pit_island';
+import glassCorridor from './glass_corridor';
+import collapsedFloor from './collapsed_floor';
 import lowWallCover from './low_wall_cover';
-import goblinDen from './goblin_den';
-import hauntedHall from './haunted_hall';
+import internPool from './intern_pool';
+import flickerHall from './flicker_hall';
 import longGallery from './long_gallery';
-import knightBarracks from './knight_barracks';
+import securityOffice from './security_office';
 import tallShaft from './tall_shaft';
-import cryptColumn from './crypt_column';
+import supplyColumn from './supply_column';
 import greatHall from './great_hall';
 import lBend from './l_bend';
 
 export default [
-  safeRoom,
+  level1Lobby,
+  apartment,
   stairsDownRoom,
-  stairsUpRoom,
-  bossBoneWarden,
+  lowerLobby,
+  bossFacilityManager,
   pillars,
-  spikeCorridor,
-  pitIsland,
+  glassCorridor,
+  collapsedFloor,
   lowWallCover,
-  goblinDen,
-  hauntedHall,
+  internPool,
+  flickerHall,
   longGallery,
-  knightBarracks,
+  securityOffice,
   tallShaft,
-  cryptColumn,
+  supplyColumn,
   greatHall,
   lBend,
 ] satisfies RoomTemplateDef[];

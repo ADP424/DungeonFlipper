@@ -228,6 +228,36 @@ export function tex(key: string): Texture {
 }
 
 /** Data URL for DOM icons. */
+const silhouettes = new Map<string, Texture>();
+
+/**
+ * A sprite's shape as a solid white mask (opaque pixels white, the rest clear), so that tinting it
+ * writes one exact value: the shadow maps draw furniture and actors with these, so shadows take the
+ * shape of the art instead of a box.
+ */
+export function silhouette(key: string): Texture {
+  let t = silhouettes.get(key);
+  if (t) return t;
+  const src = canvasFor(key);
+  const c = document.createElement('canvas');
+  c.width = src.width;
+  c.height = src.height;
+  const ctx = c.getContext('2d')!;
+  ctx.drawImage(src, 0, 0);
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const solid = d[i + 3]! > 40;
+    d[i] = d[i + 1] = d[i + 2] = 255;
+    d[i + 3] = solid ? 255 : 0;
+  }
+  ctx.putImageData(img, 0, 0);
+  t = Texture.from(c);
+  t.source.scaleMode = 'nearest';
+  silhouettes.set(key, t);
+  return t;
+}
+
 export function iconUrl(key: string): string {
   let u = urlCache.get(key);
   if (!u) {

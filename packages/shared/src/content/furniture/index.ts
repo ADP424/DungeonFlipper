@@ -4,16 +4,26 @@ import stool from './stool';
 import roundTable from './round_table';
 import table from './table';
 import bed from './bed';
+import homeBed from './home_bed';
+import elevator from './elevator';
+import portal from './portal';
+import companyFlag from './company_flag';
+import forRentSign from './for_rent_sign';
 import sofa from './sofa';
 import dresser from './dresser';
-import piano from './piano';
+import uprightPiano from './upright_piano';
 import pottedPlant from './potted_plant';
 import fern from './fern';
-import candelabra from './candelabra';
+import deskLamp from './desk_lamp';
 import floorLamp from './floor_lamp';
-import torchStand from './torch_stand';
-import brazier from './brazier';
-import storageChest from './storage_chest';
+import workLight from './work_light';
+import spaceHeater from './space_heater';
+import storageBox from './storage_box';
+import generator from './generator';
+import waterMain from './water_main';
+import sink from './sink';
+import toilet from './toilet';
+import fridge from './fridge';
 
 export default [
   chair,
@@ -21,14 +31,24 @@ export default [
   roundTable,
   table,
   bed,
+  homeBed,
+  elevator,
+  portal,
+  companyFlag,
+  forRentSign,
   sofa,
   dresser,
-  piano,
+  uprightPiano,
   pottedPlant,
   fern,
-  candelabra,
+  deskLamp,
   floorLamp,
-  torchStand,
-  brazier,
-  storageChest,
+  workLight,
+  spaceHeater,
+  storageBox,
+  generator,
+  waterMain,
+  sink,
+  toilet,
+  fridge,
 ] satisfies FurnitureDef[];

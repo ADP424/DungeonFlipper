@@ -1,26 +1,26 @@
 import type { ObstacleDef } from '../types';
-import boundaryWall from './boundary_wall';
-import stoneWall from './stone_wall';
-import stoneWallShort from './stone_wall_short';
-import hole from './hole';
-import spikes from './spikes';
-import woodWall from './wood_wall';
-import woodWallShort from './wood_wall_short';
-import plasterWall from './plaster_wall';
-import plasterWallShort from './plaster_wall_short';
+import backroomsWall from './backrooms_wall';
+import concreteWall from './concrete_wall';
+import concreteWallShort from './concrete_wall_short';
+import missingFloor from './missing_floor';
+import brokenGlass from './broken_glass';
+import timberWall from './timber_wall';
+import timberWallShort from './timber_wall_short';
+import drywall from './drywall';
+import drywallShort from './drywall_short';
 import stairsDown from './stairs_down';
 import stairsUp from './stairs_up';
 
 export default [
-  boundaryWall,
-  stoneWall,
-  stoneWallShort,
-  hole,
-  spikes,
-  woodWall,
-  woodWallShort,
-  plasterWall,
-  plasterWallShort,
+  backroomsWall,
+  concreteWall,
+  concreteWallShort,
+  missingFloor,
+  brokenGlass,
+  timberWall,
+  timberWallShort,
+  drywall,
+  drywallShort,
   stairsDown,
   stairsUp,
 ] satisfies ObstacleDef[];

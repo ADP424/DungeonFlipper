@@ -1,9 +1,20 @@
+import type { UtilityKind } from './utilities';
 import { DEATH_KEEPS_PASSIVES } from '../core/constants';
 import { tileKey } from '../core/geometry';
 import type {
-  DocKey, FloorState, FurniturePlacement, GroundItem, PlayerState, RoomState, WorldState,
+  Barricade, DocKey, FloorState, FurniturePlacement, GroundItem, MonsterRecord, PlayerState, RoomInfo, RoomState, WorldState,
 } from './types';
 import { SCHEMA_VERSION } from '../save/schema';
+import { CLOCK_KEY, getClock, type Clock } from './clock';
+import { getInbox, inboxKey, type PhoneMessage } from './inbox';
+import { WORLD_OWNER } from './ownership';
+import { regionKeyOf, regionKeys } from './regions';
+import { partnerDoor } from './doors';
+import type { Tenant } from './tenants';
+
+const TENANTS_KEY = 'tenants';
+
+const ordersKey = (playerId: string): string => `orders:${playerId}`;
 
 /**
  * Every persistent change to the world is a Command. Commands are applied by one pure reducer that
@@ -20,24 +31,59 @@ interface Base {
 export type Command = Base & (
   | { type: 'worldCreated'; worldId: string; ownerId: string; seed: number; createdAt: number }
   | { type: 'floorGenerated'; floor: FloorState; rooms: RoomState[] }
+  /** A room was expanded: new and changed RoomInfos (new doors) plus the new rooms' initial states. */
+  | { type: 'roomsGenerated'; floor: number; infos: RoomInfo[]; states: RoomState[] }
+  /** Stairs down were taken from this room: stairs up from the floor below lead back here. */
+  | { type: 'stairsDescended'; floor: number; roomId: string }
   | { type: 'playerCreated'; player: PlayerState }
   | { type: 'playerMoved'; playerId: string; floor: number; roomId: string; x: number; y: number }
   | { type: 'playerUpdated'; playerId: string; patch: PlayerPatch }
   | { type: 'playerDied'; playerId: string; respawn: { floor: number; roomId: string; x: number; y: number }; redHalves: number }
-  | { type: 'enemyKilled'; roomId: string; spawnId: string }
-  | { type: 'roomOwned'; roomId: string }
+  | { type: 'monsterKilled'; roomId: string; monsterId: string }
+  /** Persist monsters' health when leaving a room (records not listed are dropped). */
+  | { type: 'rosterSynced'; roomId: string; monsters: MonsterRecord[] }
+  | { type: 'roomOwned'; roomId: string; ownerId: string }
+  | { type: 'roomOwnerCleared'; roomId: string }
+  /** Install, repair, upgrade or remove (null) a doorway's barricade (given by either side's door tile; both sides change). */
+  | { type: 'barricadeSet'; roomId: string; door: string; barricade: Barricade | null }
+  /** Wear: new HP per door tile of this room (mirrored to the other side of each doorway). */
+  | { type: 'barricadesDamaged'; roomId: string; hp: Record<string, number> }
+  /** A monster walked from one room of an area into another (it no longer has a spawn tile). */
+  | { type: 'monsterMoved'; from: string; to: string; monsterId: string }
+  /** A monster spilled in through a door. */
+  | { type: 'monsterAdded'; roomId: string; record: MonsterRecord }
+  /** Start (day) or clear (null) an owned room's securing deadline. */
+  | { type: 'roomInsecure'; roomId: string; since: number | null }
+  /** Buy from the Hardware app: cash now, delivery when the day ends. */
+  | { type: 'orderPlaced'; playerId: string; items: string[]; cost: number }
+  /** Orders arrived; `remaining` (furniture that didn't fit) stays on order for the next day. */
+  | { type: 'ordersDelivered'; playerId: string; remaining?: string[] }
+  /** Add or update a tenant / applicant record. */
+  | { type: 'tenantSet'; tenant: Tenant }
+  | { type: 'tenantRemoved'; id: string }
+  | { type: 'timePassed'; minutes: number }
+  | { type: 'clockSet'; clock: Clock }
+  /** The player slept: the clock jumps to the wake time and health is set. */
+  | { type: 'slept'; playerId: string; clock: Clock; redHalves: number }
+  | { type: 'messagePosted'; playerId: string; message: PhoneMessage }
+  | { type: 'messagesRead'; playerId: string }
   | { type: 'groundItemAdded'; roomId: string; item: GroundItem }
   | { type: 'groundItemRemoved'; roomId: string; uid: string }
   | { type: 'furniturePlaced'; roomId: string; placement: FurniturePlacement }
   | { type: 'furnitureRemoved'; roomId: string; uid: string }
   | { type: 'furnitureUpdated'; roomId: string; placement: FurniturePlacement }
   | { type: 'tileSet'; roomId: string; x: number; y: number; obstacle: string | null }
+  /** Lay / take up a pipe or wire segment on a tile (P6). */
+  | { type: 'utilityLaid'; roomId: string; x: number; y: number; kind: UtilityKind }
+  | { type: 'utilityRemoved'; roomId: string; x: number; y: number; kind: UtilityKind }
+  /** A segment fails (`fault: true`) or is repaired. */
+  | { type: 'utilityFault'; roomId: string; x: number; y: number; kind: UtilityKind; fault: boolean }
   | { type: 'surfaceSet'; roomId: string; x: number; y: number; layer: 'floor' | 'wall'; surface: string | null }
   | { type: 'globalSet'; key: string; value: unknown }
 );
 
 export type CommandType = Command['type'];
-export type PlayerPatch = Partial<Pick<PlayerState, 'gold' | 'redHalves' | 'baseRedMaxHalves' | 'hotbar' | 'passives' | 'carrying'>>;
+export type PlayerPatch = Partial<Pick<PlayerState, 'cash' | 'redHalves' | 'baseRedMaxHalves' | 'hotbar' | 'passives' | 'carrying'>>;
 
 export function emptyWorld(): WorldState {
   return {
@@ -84,12 +130,37 @@ export function applyCommand(state: WorldState, cmd: Command): DocKey[] {
 
     case 'floorGenerated': {
       state.floors[cmd.floor.index] = structuredClone(cmd.floor);
-      const keys: DocKey[] = [`floor:${cmd.floor.index}`];
+      const keys: DocKey[] = [`floor:${cmd.floor.index}`, ...regionKeys(cmd.floor)];
       for (const r of cmd.rooms) {
         state.rooms[r.id] = structuredClone(r);
+        if (r.ownerId === WORLD_OWNER) state.rooms[r.id]!.ownerId = state.ownerId;
         keys.push(`room:${r.id}`);
       }
       return keys;
+    }
+
+    case 'roomsGenerated': {
+      const floor = state.floors[cmd.floor];
+      if (!floor) throw new CommandError(`Unknown floor ${cmd.floor}`);
+      const keys = new Set<DocKey>();
+      for (const info of cmd.infos) {
+        floor.rooms[info.id] = structuredClone(info);
+        for (const c of info.cells) floor.cells[`${c.cx},${c.cy}`] = info.id;
+        keys.add(regionKeyOf(cmd.floor, info));
+      }
+      for (const r of cmd.states) {
+        state.rooms[r.id] = structuredClone(r);
+        if (r.ownerId === WORLD_OWNER) state.rooms[r.id]!.ownerId = state.ownerId;
+        keys.add(`room:${r.id}`);
+      }
+      return [...keys];
+    }
+
+    case 'stairsDescended': {
+      const floor = state.floors[cmd.floor];
+      if (!floor) throw new CommandError(`Unknown floor ${cmd.floor}`);
+      floor.lastStairsDown = cmd.roomId;
+      return [`floor:${cmd.floor}`];
     }
 
     case 'playerCreated':
@@ -140,16 +211,136 @@ export function applyCommand(state: WorldState, cmd: Command): DocKey[] {
       return [`player:${p.id}`];
     }
 
-    case 'enemyKilled': {
+    case 'monsterKilled': {
       const r = room(state, cmd.roomId);
-      if (!r.deadSpawnIds.includes(cmd.spawnId)) r.deadSpawnIds.push(cmd.spawnId);
+      r.monsters = r.monsters.filter((m) => m.id !== cmd.monsterId);
+      return [`room:${r.id}`];
+    }
+
+    case 'rosterSynced': {
+      const r = room(state, cmd.roomId);
+      r.monsters = structuredClone(cmd.monsters);
       return [`room:${r.id}`];
     }
 
     case 'roomOwned': {
       const r = room(state, cmd.roomId);
-      r.owned = true;
+      r.ownerId = cmd.ownerId;
       return [`room:${r.id}`];
+    }
+
+    case 'roomOwnerCleared': {
+      const r = room(state, cmd.roomId);
+      r.ownerId = null;
+      delete r.insecureSince;
+      return [`room:${r.id}`];
+    }
+
+    case 'barricadeSet': {
+      const keys: DocKey[] = [];
+      for (const side of [{ roomId: cmd.roomId, key: cmd.door }, partnerDoor(state, cmd.roomId, cmd.door)]) {
+        if (!side) continue;
+        const r = room(state, side.roomId);
+        if (cmd.barricade) r.barricades[side.key] = { ...cmd.barricade };
+        else delete r.barricades[side.key];
+        keys.push(`room:${r.id}`);
+      }
+      return keys;
+    }
+
+    case 'barricadesDamaged': {
+      const keys = new Set<DocKey>();
+      for (const [door, hp] of Object.entries(cmd.hp)) {
+        for (const side of [{ roomId: cmd.roomId, key: door }, partnerDoor(state, cmd.roomId, door)]) {
+          if (!side) continue;
+          const r = state.rooms[side.roomId];
+          if (!r?.barricades[side.key]) continue;
+          r.barricades[side.key]!.hp = hp;
+          keys.add(`room:${r.id}`);
+        }
+      }
+      return [...keys];
+    }
+
+    case 'monsterMoved': {
+      const a = room(state, cmd.from);
+      const b = room(state, cmd.to);
+      const rec = a.monsters.find((m) => m.id === cmd.monsterId);
+      if (!rec) return [];
+      a.monsters = a.monsters.filter((m) => m.id !== cmd.monsterId);
+      const { spawnId: _s, door: _d, ...rest } = rec;
+      b.monsters = [...b.monsters.filter((m) => m.id !== cmd.monsterId), rest];
+      return [`room:${a.id}`, `room:${b.id}`];
+    }
+
+    case 'monsterAdded': {
+      const r = room(state, cmd.roomId);
+      r.monsters = [...r.monsters.filter((m) => m.id !== cmd.record.id), structuredClone(cmd.record)];
+      return [`room:${r.id}`];
+    }
+
+    case 'roomInsecure': {
+      const r = room(state, cmd.roomId);
+      if (cmd.since === null) delete r.insecureSince;
+      else r.insecureSince = cmd.since;
+      return [`room:${r.id}`];
+    }
+
+    case 'orderPlaced': {
+      const p = player(state, cmd.playerId);
+      if (p.cash < cmd.cost) throw new CommandError('Not enough cash');
+      p.cash -= cmd.cost;
+      const prev = (state.globals[ordersKey(p.id)] as { items: string[] } | undefined)?.items ?? [];
+      state.globals[ordersKey(p.id)] = { items: [...prev, ...cmd.items] };
+      return [`player:${p.id}`, `global:${ordersKey(p.id)}`];
+    }
+
+    case 'tenantSet': {
+      const all = { ...((state.globals[TENANTS_KEY] as Record<string, Tenant> | undefined) ?? {}) };
+      all[cmd.tenant.id] = structuredClone(cmd.tenant);
+      state.globals[TENANTS_KEY] = all;
+      return [`global:${TENANTS_KEY}`];
+    }
+
+    case 'tenantRemoved': {
+      const all = { ...((state.globals[TENANTS_KEY] as Record<string, Tenant> | undefined) ?? {}) };
+      delete all[cmd.id];
+      state.globals[TENANTS_KEY] = all;
+      return [`global:${TENANTS_KEY}`];
+    }
+
+    case 'ordersDelivered':
+      state.globals[ordersKey(cmd.playerId)] = { items: cmd.remaining ?? [] };
+      return [`global:${ordersKey(cmd.playerId)}`];
+
+    case 'timePassed': {
+      const c = getClock(state);
+      state.globals[CLOCK_KEY] = { day: c.day, minute: c.minute + cmd.minutes };
+      return [`global:${CLOCK_KEY}`];
+    }
+
+    case 'clockSet':
+      state.globals[CLOCK_KEY] = { ...cmd.clock };
+      return [`global:${CLOCK_KEY}`];
+
+    case 'slept': {
+      const p = player(state, cmd.playerId);
+      p.redHalves = cmd.redHalves;
+      state.globals[CLOCK_KEY] = { ...cmd.clock };
+      return [`player:${p.id}`, `global:${CLOCK_KEY}`];
+    }
+
+    case 'messagePosted': {
+      const box = getInbox(state, cmd.playerId);
+      const messages = [...box.messages.filter((m) => m.id !== cmd.message.id), structuredClone(cmd.message)];
+      state.globals[inboxKey(cmd.playerId)] = { messages, unread: Math.min(messages.length, box.unread + 1) };
+      return [`global:${inboxKey(cmd.playerId)}`];
+    }
+
+    case 'messagesRead': {
+      const box = getInbox(state, cmd.playerId);
+      state.globals[inboxKey(cmd.playerId)] = { messages: box.messages, unread: 0 };
+      return [`global:${inboxKey(cmd.playerId)}`];
     }
 
     case 'groundItemAdded': {
@@ -176,6 +367,33 @@ export function applyCommand(state: WorldState, cmd: Command): DocKey[] {
     case 'furnitureRemoved': {
       const r = room(state, cmd.roomId);
       r.furniture = r.furniture.filter((f) => f.uid !== cmd.uid);
+      return [`room:${r.id}`];
+    }
+
+    case 'utilityLaid': {
+      const r = room(state, cmd.roomId);
+      const k = tileKey(cmd.x, cmd.y);
+      r.utilities ??= {};
+      r.utilities[k] = { ...r.utilities[k], [cmd.kind]: {} };
+      return [`room:${r.id}`];
+    }
+
+    case 'utilityRemoved': {
+      const r = room(state, cmd.roomId);
+      const k = tileKey(cmd.x, cmd.y);
+      const t = r.utilities?.[k];
+      if (!t) return [];
+      delete t[cmd.kind];
+      if (!Object.keys(t).length) delete r.utilities![k];
+      return [`room:${r.id}`];
+    }
+
+    case 'utilityFault': {
+      const r = room(state, cmd.roomId);
+      const seg = r.utilities?.[tileKey(cmd.x, cmd.y)]?.[cmd.kind];
+      if (!seg) return [];
+      if (cmd.fault) seg.fault = true;
+      else delete seg.fault;
       return [`room:${r.id}`];
     }
 

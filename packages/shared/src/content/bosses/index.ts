@@ -1,6 +1,6 @@
 import type { EnemyDef } from '../types';
-import boneWarden from './bone_warden';
+import facilityManager from './facility_manager';
 
 export default [
-  boneWarden,
+  facilityManager,
 ] satisfies EnemyDef[];

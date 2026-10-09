@@ -1,4 +1,4 @@
-import type { RoomLayout } from './layout';
+import type { TileQueries } from './area';
 
 /**
  * Wall autotiling. Each wall tile is drawn as four 8×8 quarters, and each quarter picks one of four
@@ -28,7 +28,7 @@ const QUARTERS: [number, number, number][] = [
 ];
 
 /** Neighbour mask for an autotiled wall tile, with diagonals kept only where they matter. */
-export function wallMask(layout: RoomLayout, x: number, y: number): number {
+export function wallMask(layout: TileQueries, x: number, y: number): number {
   const joins = layout.obstacleAt(x, y)?.autotile?.joins ?? [];
   const joined = (dx: number, dy: number) => {
     if (layout.kindAt(x + dx, y + dy) === 'void') return true;

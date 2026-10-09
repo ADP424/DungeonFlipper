@@ -1,22 +1,22 @@
 import type { ProjectileDef } from '../types';
-import arrow from './arrow';
-import bolt from './bolt';
-import fireball from './fireball';
-import frostOrb from './frost_orb';
-import fireFlask from './fire_flask';
-import enemyArrow from './enemy_arrow';
-import magicOrb from './magic_orb';
-import bone from './bone';
-import slimeGlob from './slime_glob';
+import nail from './nail';
+import rivet from './rivet';
+import torchFlame from './torch_flame';
+import foamCloud from './foam_cloud';
+import sprayBottle from './spray_bottle';
+import staple from './staple';
+import memo from './memo';
+import clipboard from './clipboard';
+import waterGlob from './water_glob';
 
 export default [
-  arrow,
-  bolt,
-  fireball,
-  frostOrb,
-  fireFlask,
-  enemyArrow,
-  magicOrb,
-  bone,
-  slimeGlob,
+  nail,
+  rivet,
+  torchFlame,
+  foamCloud,
+  sprayBottle,
+  staple,
+  memo,
+  clipboard,
+  waterGlob,
 ] satisfies ProjectileDef[];

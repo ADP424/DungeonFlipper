@@ -1,24 +1,24 @@
 import type { EnemyDef } from '../types';
-import slime from './slime';
+import dampBlob from './damp_blob';
 import rat from './rat';
-import bat from './bat';
-import skeletonArcher from './skeleton_archer';
-import goblin from './goblin';
-import wisp from './wisp';
-import knight from './knight';
-import cultist from './cultist';
-import bogCrab from './bog_crab';
-import skeleton from './skeleton';
+import ceilingMoth from './ceiling_moth';
+import staplerClerk from './stapler_clerk';
+import intern from './intern';
+import flicker from './flicker';
+import securityGuard from './security_guard';
+import hrRep from './hr_rep';
+import waterCooler from './water_cooler';
+import mannequin from './mannequin';
 
 export default [
-  slime,
+  dampBlob,
   rat,
-  bat,
-  skeletonArcher,
-  goblin,
-  wisp,
-  knight,
-  cultist,
-  bogCrab,
-  skeleton,
+  ceilingMoth,
+  staplerClerk,
+  intern,
+  flicker,
+  securityGuard,
+  hrRep,
+  waterCooler,
+  mannequin,
 ] satisfies EnemyDef[];

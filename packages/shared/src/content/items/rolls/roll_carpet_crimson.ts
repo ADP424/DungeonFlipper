@@ -4,7 +4,7 @@ export default {
   id: 'roll_carpet_crimson',
   kind: 'roll',
   name: 'Crimson Carpet',
-  description: 'Covers floor tiles (and doorways) in rooms you own. Each tile costs 1.',
+  description: 'Covers floor tiles (and doorways). Each tile costs 1.',
   icon: 'proc:roll:carpet_crimson',
   surface: 'carpet_crimson',
   coverage: 32,

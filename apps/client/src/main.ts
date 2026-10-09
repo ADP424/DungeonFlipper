@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   const game = new Game(app, session);
   if (import.meta.env.DEV) {
     Object.assign(window, { game, df: { registry, canvasFor } });
-    console.info('[DungeonFlipper] dev keys: F2 random item · F3 +50 gold · F4 kill room · F6 heal · F7 random furniture · F8 next floor · F9 reset world');
+    console.info('[DungeonFlipper] dev keys: F2 random item · F3 +$50 · F4 kill room · F6 heal · F7 random furniture · F8 next floor · F9 reset world · F10 +1 hour · Shift+F10 to 11:45 PM');
   }
 }
 

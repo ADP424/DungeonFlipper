@@ -2,15 +2,17 @@ import { createRequire } from 'node:module';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { SCHEMA_VERSION, emptyWorld, migrate, type DocKey, type WorldState } from '@df/shared';
+import {
+  SCHEMA_VERSION, SaveTooOldError, emptyWorld, floorMeta, migrate, regionDoc, regionKeys, type DocKey, type FloorState, type RegionDoc, type WorldState,
+} from '@df/shared';
 
 // Loaded via require: some bundlers (Vite/Vitest) don't yet recognise the `node:sqlite` builtin.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
 
 /**
- * SQLite persistence with one JSON document per world / floor / room / player / global key, so a
- * sync only rewrites the documents its commands touched. Large floors cost nothing to sync until
- * their rooms change.
+ * SQLite persistence with one JSON document per world / floor / region / room / player / global key,
+ * so a sync only rewrites the documents its commands touched. Floors are unbounded, so their rooms
+ * live in fixed-size region documents; the floor document holds only its metadata.
  */
 export class Store {
   readonly db: DatabaseSyncType;
@@ -26,6 +28,7 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS worlds_owner ON worlds(owner_id);
       CREATE TABLE IF NOT EXISTS floors (world_id TEXT, idx INTEGER, json TEXT NOT NULL, PRIMARY KEY (world_id, idx));
+      CREATE TABLE IF NOT EXISTS regions (world_id TEXT, floor INTEGER, region TEXT, json TEXT NOT NULL, PRIMARY KEY (world_id, floor, region));
       CREATE TABLE IF NOT EXISTS rooms (world_id TEXT, room_id TEXT, floor INTEGER, rev INTEGER, json TEXT NOT NULL, PRIMARY KEY (world_id, room_id));
       CREATE TABLE IF NOT EXISTS players (id TEXT, world_id TEXT, json TEXT NOT NULL, PRIMARY KEY (world_id, id));
       CREATE TABLE IF NOT EXISTS globals (world_id TEXT, key TEXT, json TEXT NOT NULL, PRIMARY KEY (world_id, key));
@@ -48,7 +51,16 @@ export class Store {
     if (!w) return undefined;
     const state: WorldState = { ...emptyWorld(), ...JSON.parse(w.json), revision: w.revision };
     for (const r of this.db.prepare('SELECT idx, json FROM floors WHERE world_id = ?').all(worldId) as { idx: number; json: string }[]) {
-      state.floors[r.idx] = JSON.parse(r.json);
+      // Older floor documents still embed their rooms and cells; newer ones are metadata only.
+      state.floors[r.idx] = { cells: {}, rooms: {}, ...JSON.parse(r.json) } as FloorState;
+    }
+    const regions = this.db.prepare('SELECT floor, json FROM regions WHERE world_id = ?').all(worldId) as { floor: number; json: string }[];
+    for (const r of regions) {
+      const floor = state.floors[r.floor];
+      if (!floor) continue;
+      const doc = JSON.parse(r.json) as RegionDoc;
+      Object.assign(floor.cells, doc.cells);
+      Object.assign(floor.rooms, doc.rooms);
     }
     for (const r of this.db.prepare('SELECT room_id, json FROM rooms WHERE world_id = ?').all(worldId) as { room_id: string; json: string }[]) {
       state.rooms[r.room_id] = JSON.parse(r.json);
@@ -60,7 +72,14 @@ export class Store {
       state.globals[r.key] = JSON.parse(r.json);
     }
     const before = state.schemaVersion;
-    const migrated = migrate(state as unknown as Record<string, unknown>);
+    let migrated: WorldState;
+    try {
+      migrated = migrate(state as unknown as Record<string, unknown>);
+    } catch (e) {
+      // Too old to upgrade: behave as if there were no world, so the client starts a new one.
+      if (e instanceof SaveTooOldError) return undefined;
+      throw e;
+    }
     // A migration may rewrite any document, so store them all once (without bumping the revision).
     if (before < SCHEMA_VERSION) {
       this.db.exec('BEGIN');
@@ -108,7 +127,12 @@ export class Store {
     for (const key of keys) {
       const [kind, id] = splitKey(key);
       if (kind === 'floor') {
-        this.db.prepare('INSERT OR REPLACE INTO floors (world_id, idx, json) VALUES (?, ?, ?)').run(state.worldId, Number(id), JSON.stringify(state.floors[Number(id)]));
+        this.db.prepare('INSERT OR REPLACE INTO floors (world_id, idx, json) VALUES (?, ?, ?)').run(state.worldId, Number(id), JSON.stringify(floorMeta(state.floors[Number(id)]!)));
+      } else if (kind === 'region') {
+        const [floor, region] = [Number(id.slice(0, id.indexOf(':'))), id.slice(id.indexOf(':') + 1)];
+        this.db
+          .prepare('INSERT OR REPLACE INTO regions (world_id, floor, region, json) VALUES (?, ?, ?, ?)')
+          .run(state.worldId, floor, region, JSON.stringify(regionDoc(state.floors[floor]!, region)));
       } else if (kind === 'room') {
         const room = state.rooms[id]!;
         this.db
@@ -131,6 +155,7 @@ function allDocKeys(state: WorldState): DocKey[] {
   return [
     'world',
     ...Object.keys(state.floors).map((i): DocKey => `floor:${Number(i)}`),
+    ...Object.values(state.floors).flatMap((f) => regionKeys(f)),
     ...Object.keys(state.rooms).map((id): DocKey => `room:${id}`),
     ...Object.keys(state.players).map((id): DocKey => `player:${id}`),
     ...Object.keys(state.globals).map((k): DocKey => `global:${k}`),

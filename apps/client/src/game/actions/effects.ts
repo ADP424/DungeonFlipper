@@ -11,8 +11,8 @@ export const effects: Record<string, Effect> = {
   heal(game, params) {
     return game.healPlayer(Number(params.halves ?? 2)) > 0;
   },
-  gold(game, _params, item) {
-    game.addGold(Number(item.data.amount ?? 1));
+  cash(game, _params, item) {
+    game.addCash(Number(item.data.amount ?? 1));
     return true;
   },
 };

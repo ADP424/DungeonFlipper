@@ -10,6 +10,8 @@ export class GroundItemEntity extends Entity {
   private spill?: { fx: number; fy: number; t: number; dur: number };
   /** Can't be picked up until the player has stepped away (after dropping it themselves). */
   requiresExit = false;
+  /** The room whose state lists it. */
+  roomId = '';
   private bobT = Math.random() * 10;
 
   constructor(readonly data: GroundItem, spillFrom?: { x: number; y: number }) {

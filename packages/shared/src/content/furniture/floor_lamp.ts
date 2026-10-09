@@ -10,4 +10,8 @@ export default {
   blocksProjectiles: [],
   height: 1.4,
   light: { radius: 9, color: 0xfff0c8, intensity: 1.5, shadows: true, height: 1.6 },
+  value: 4,
+  tags: ['light'],
+  price: 15,
+  utility: { needs: 'power' },
 } satisfies FurnitureDef;

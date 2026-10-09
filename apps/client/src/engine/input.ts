@@ -18,7 +18,11 @@ export class Input {
   constructor(private canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
       const k = e.key.toLowerCase();
-      if (!this.keys.has(k)) this.pressedKeys.add(k);
+      if (!this.keys.has(k)) {
+        this.pressedKeys.add(k);
+        // Modifier combos are captured at press time: Shift may be released before the next step reads it.
+        if (e.shiftKey && k !== 'shift') this.pressedKeys.add(`shift+${k}`);
+      }
       this.keys.add(k);
       if (k.startsWith('f') && k.length > 1 && k !== 'f5' && k !== 'f12') e.preventDefault();
     });
@@ -67,6 +71,7 @@ export class Input {
 
   get primary(): boolean { return this.buttons.has(0); }
   get secondary(): boolean { return this.buttons.has(2); }
+  get secondaryPressed(): boolean { return this.pressedButtons.has(2); }
   get primaryPressed(): boolean { return this.pressedButtons.has(0); }
   get primaryReleased(): boolean { return this.releasedButtons.has(0); }
 

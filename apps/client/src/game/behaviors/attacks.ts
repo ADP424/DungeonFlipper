@@ -55,7 +55,7 @@ const summon: AttackBehavior = (ctx: BehaviorCtx<{ enemy: string; cooldown?: num
   state.cd = (state.cd ?? params.cooldown ?? 5) - dt;
   if (state.cd > 0) return;
   state.cd = params.cooldown ?? 5;
-  const alive = game.room.enemies.filter((x) => !x.spawnId && x.def.id === params.enemy).length;
+  const alive = game.room.enemies.filter((x) => !x.monsterId && x.def.id === params.enemy).length;
   for (let i = 0; i < (params.count ?? 1) && alive + i < (params.max ?? 3); i++) {
     game.spawnEnemy(params.enemy, e.x + (Math.random() - 0.5) * 2, e.y + (Math.random() - 0.5) * 2);
   }

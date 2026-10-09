@@ -100,6 +100,24 @@ export interface FurnitureDef {
   height?: number;
   /** Container (e.g. storage chest): number of item slots. Containers open on click, lift on hold. */
   container?: { slots: number };
+  /** Can't be lifted or moved (the apartment bed, elevators, utility sources…). */
+  fixed?: boolean;
+  /** A claim marker (the company flag): removed when its room is lost. */
+  claimsRoom?: boolean;
+  /** How desirable it is (1 = stool … 5 = piano). Only furniture with a value appears in furniture slots. */
+  value?: number;
+  /** Categories furniture slots can ask for ('light', 'seat', 'table', 'storage', 'plant', 'bed'…). */
+  tags?: string[];
+  /** Click action (client `furnitureUses` registry). Movable furniture with a use lifts on hold, like containers. */
+  use?: BehaviorRef;
+  /** Sold by the phone's Hardware app for this many dollars, delivered onto your apartment floor. */
+  price?: number;
+  /** Small enough to stand on a tabletop (a desk lamp, a plant). */
+  small?: boolean;
+  /** Small furniture can stand on it, drawn this many pixels up (its top surface). */
+  tabletop?: number;
+  /** Utilities (P6): a source of power / water, or a fixture that needs one to work. */
+  utility?: { provides?: 'power' | 'water'; needs?: 'power' | 'water' };
 }
 
 // ───────────────────────────── Projectiles ─────────────────────────────
@@ -181,9 +199,20 @@ interface ItemBase {
   name: string;
   description: string;
   icon: SpriteKey;
+  /** Sold by the phone's Hardware app for this much cash (delivered to the apartment next morning). */
+  price?: number;
 }
 
-export interface WeaponDef extends ItemBase { kind: 'weapon'; attack: AttackDef; light?: LightDef }
+export interface WeaponDef extends ItemBase {
+  kind: 'weapon';
+  attack: AttackDef;
+  light?: LightDef;
+  /**
+   * Dual-use tools: in any room with no enemies alive, left click renovates with this action
+   * instead of attacking. Renovating spends `count` uses (starting at `uses`); attacking never does.
+   */
+  tool?: { action: BehaviorRef; uses: number };
+}
 export interface ArmorDef extends ItemBase { kind: 'armor'; halves: number; mods?: StatMod[] }
 export interface ToolDef extends ItemBase {
   kind: 'tool';
@@ -198,7 +227,9 @@ export interface PassiveDef extends ItemBase { kind: 'passive'; mods?: StatMod[]
 /** Consumed on touch (hearts, coins…). */
 export interface PickupDef extends ItemBase { kind: 'pickup'; effect: BehaviorRef; sprite?: SpriteKey }
 
-export type ItemDef = WeaponDef | ArmorDef | ToolDef | RollDef | PassiveDef | PickupDef;
+/** Carries other items in the hotbar (a toolkit): `slots` of them, of the kinds `kitAccepts` allows. */
+export interface KitDef extends ItemBase { kind: 'kit'; slots: number }
+export type ItemDef = WeaponDef | ArmorDef | ToolDef | RollDef | PassiveDef | PickupDef | KitDef;
 export type ItemKind = ItemDef['kind'];
 
 // ───────────────────────────── Enemies ─────────────────────────────
@@ -213,6 +244,10 @@ export interface EnemyDef {
   /** Collision radius in tiles. */
   radius: number;
   hp: number;
+  /** Spawn-budget cost (~1–10 for normal enemies). Rooms fill spawn slots by difficulty from this. */
+  threat: number;
+  /** Free-form traits spawn slots can ask for ('flyer', 'ranged', 'swarm', 'brute'…). */
+  tags: string[];
   /** Tiles per second. */
   speed: number;
   movementKind: MovementKind;
@@ -224,8 +259,8 @@ export interface EnemyDef {
   knockbackResist?: number;
   lootTable?: string;
   light?: LightDef;
-  /** Present for bosses: shows a health bar. */
-  boss?: { title: string };
+  /** Present for bosses: shows a health bar. Boss rooms only appear at or beyond `minDifficulty`. */
+  boss?: { title: string; minDifficulty: number };
 }
 
 // ───────────────────────────── Health layers ─────────────────────────────
@@ -244,8 +279,7 @@ export interface HealthLayerDef {
 
 export type LootEntry =
   | { chance: number; item: string }
-  | { chance: number; gold: number | [number, number] }
-  | { chance: number; furniture: string };
+  | { chance: number; cash: number | [number, number] };
 
 export interface LootDrop {
   /** Probability this drop happens at all. */
@@ -258,7 +292,8 @@ export interface LootTableDef { id: string; drops: LootDrop[] }
 
 // ───────────────────────────── Rooms ─────────────────────────────
 
-export type RoomTag = 'normal' | 'safe' | 'boss' | 'stairsDown' | 'stairsUp';
+/** `lobby`: a floor's entry room (elevator, NPC arrivals). `home`: your real-world apartment (floor 0). */
+export type RoomTag = 'normal' | 'safe' | 'boss' | 'stairsDown' | 'stairsUp' | 'lobby' | 'home';
 
 export interface CellCoord { cx: number; cy: number }
 
@@ -268,7 +303,10 @@ export interface RoomTemplateDef {
   cells: CellCoord[];
   tags: RoomTag[];
   weight?: number;
-  minFloor?: number;
+  /** Only generated where room difficulty is at least this. */
+  minDifficulty?: number;
+  /** Rooms with these tags are attached behind this one when it is generated (boss room → stairs down). */
+  attach?: RoomTag[];
   /**
    * ASCII layout of the room's bounding box *minus its outer 1-tile wall ring*.
    * Characters on derived boundary/void tiles are ignored. See layout legend in roomTemplates/legend.ts.
@@ -277,16 +315,30 @@ export interface RoomTemplateDef {
   /** Extra per-template legend entries (merged over the default legend). */
   legend?: Record<string, LegendEntry>;
   /** Furniture placed at generation time (e.g. safe room starters), coordinates relative to the map. */
-  furniture?: { def: string; x: number; y: number; rot?: number; contents?: (string | null)[] }[];
-  /** Initial floor surface for the whole room. */
+  /** Container contents by item id; a kit can be given its own contents: `{ id: 'toolkit', contents: [...] }`. */
+  furniture?: { def: string; x: number; y: number; rot?: number; contents?: (string | { id: string; contents: string[] } | null)[] }[];
+  /** Default floor / wall surface of the room (unpapered tiles); the Backrooms carpet and wallpaper otherwise. */
   floorSurface?: string;
+  wallSurface?: string;
   /** Rooms with this flag start owned (safe room). */
   startsOwned?: boolean;
 }
 
+/**
+ * An enemy spawn point. Generation picks the enemy from the room's difficulty and threat budget:
+ *  - `{}`: any normal enemy; `tags`: only enemies having all of them;
+ *  - `enemies`: one of exactly these (a single entry pins the enemy). Always spawns, ignores the difficulty cap;
+ *  - `boss`: the hardest boss eligible at the room's difficulty.
+ */
+export interface SpawnSlot { tags?: string[]; enemies?: string[]; boss?: boolean }
+
 export type LegendEntry =
   | { obstacle: string }
+  /** Shorthand for a slot pinned to one enemy. */
   | { enemy: string }
+  | { slot: SpawnSlot }
   /** Furniture placed on the tile when the room is generated (it can be lifted like any other). */
   | { furniture: string }
+  /** Maybe furniture, chosen at generation by difficulty (better pieces farther out); `tags` narrow it. */
+  | { furnitureSlot: { tags?: string[]; chance?: number } }
   | { floor: true };

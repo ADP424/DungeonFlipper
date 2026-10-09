@@ -1,21 +1,26 @@
 import { CELL_H, CELL_W } from '../core/constants';
 import { tileKey } from '../core/geometry';
 import { legendFor, templateMapSize } from '../content';
+import { BACKROOMS_SURFACES } from './difficulty';
 import { furniture as furnitureReg, obstacles, roomTemplates } from '../content/registry';
-import type { CellCoord, FurnitureDef, MovementKind, ObstacleDef, RoomTemplateDef, TrajectoryKind } from '../content/types';
-import type { Dir, FurniturePlacement, RoomInfo, RoomState } from './types';
+import type { CellCoord, FurnitureDef, MovementKind, ObstacleDef, RoomTemplateDef, SpawnSlot, TrajectoryKind } from '../content/types';
+import type { Barricade, Dir, FurniturePlacement, MonsterRecord, RoomInfo, RoomState } from './types';
+
+/** Whether the player can walk through a barricade of each tier (mirrors securing.ts's BARRICADE_TIERS). */
+const BARRICADE_PASSABLE: Record<number, boolean> = { 1: false, 2: true, 3: true, 4: true };
 
 export type TileKind = 'void' | 'floor' | 'door';
 
 export interface SpawnPoint {
   spawnId: string;
-  enemy: string;
+  /** What may spawn here; generation picks the actual enemy (see `rollRoster`). */
+  slot: SpawnSlot;
   /** Global tile coords of the spawn tile centre. */
   x: number;
   y: number;
 }
 
-export const BOUNDARY_WALL = 'boundary_wall';
+export const BOUNDARY_WALL = 'backrooms_wall';
 
 export const cellKey = (cx: number, cy: number): string => `${cx},${cy}`;
 
@@ -55,6 +60,8 @@ export class RoomLayout {
   /** Door tile and the tile just inside it: nothing may be built there. */
   readonly reserved = new Set<string>();
   private furnitureAt = new Map<string, FurniturePlacement>();
+  /** Small furniture standing on a tabletop, by tile (see `rebuildFurniture`). */
+  private topAt = new Map<string, FurniturePlacement>();
   private cellSet: Set<string>;
 
   constructor(readonly info: RoomInfo, public state: RoomState) {
@@ -95,13 +102,13 @@ export class RoomLayout {
       for (let mx = 0; mx < row.length; mx++) {
         const e = legend[row[mx]!];
         // Map furniture lives in the room state (placed by the generator), not in the layout.
-        if (!e || 'floor' in e || 'furniture' in e) continue;
+        if (!e || 'floor' in e || 'furniture' in e || 'furnitureSlot' in e) continue;
         const { x, y } = templateToGlobal(info, this.template, mx, my);
         if (!this.inBounds(x, y)) continue;
         const i = this.idx(x, y);
         if (this.kinds[i] !== 'floor' || this.baseObstacles[i] === BOUNDARY_WALL) continue;
         if ('obstacle' in e) this.baseObstacles[i] = e.obstacle;
-        else this.spawns.push({ spawnId: `${mx},${my}`, enemy: e.enemy, x: x + 0.5, y: y + 0.5 });
+        else this.spawns.push({ spawnId: `${mx},${my}`, slot: 'slot' in e ? e.slot : { enemies: [e.enemy] }, x: x + 0.5, y: y + 0.5 });
       }
     });
 
@@ -135,6 +142,17 @@ export class RoomLayout {
     return this.inBounds(x, y) ? this.kinds[this.idx(x, y)]! : 'void';
   }
 
+  /** Effective floor surface: the tile's own (rolled-on) surface, else the room's default. */
+  floorSurfaceAt(x: number, y: number): string {
+    return this.state.floorSurfaces[tileKey(x, y)] ?? this.template.floorSurface ?? BACKROOMS_SURFACES.floor;
+  }
+
+  /** Effective wallpaper of a wall tile (undefined for non-walls): its own, else the room's default. */
+  wallSurfaceAt(x: number, y: number): string | undefined {
+    if (!this.obstacleAt(x, y)?.isWall) return undefined;
+    return this.state.wallSurfaces[tileKey(x, y)] ?? this.template.wallSurface ?? BACKROOMS_SURFACES.wall;
+  }
+
   isBoundary(x: number, y: number): boolean {
     return this.inBounds(x, y) && this.baseObstacles[this.idx(x, y)] === BOUNDARY_WALL;
   }
@@ -151,22 +169,51 @@ export class RoomLayout {
     return obstacles.tryGet(this.obstacleIdAt(x, y));
   }
 
+  /** The furniture you'd reach for on a tile: what stands on a tabletop first, else what stands on the floor. */
   furnitureAtTile(x: number, y: number): FurniturePlacement | undefined {
-    return this.furnitureAt.get(tileKey(x, y));
+    const k = tileKey(x, y);
+    return this.topAt.get(k) ?? this.furnitureAt.get(k);
   }
 
+  /** The tabletop furniture a small piece stands on, if it's on one. */
+  onTopOf(f: FurniturePlacement): FurniturePlacement | undefined {
+    const k = tileKey(f.x, f.y);
+    return this.topAt.get(k) === f ? this.furnitureAt.get(k) : undefined;
+  }
+
+  /**
+   * Index furniture by tile. Floor-standing pieces first; then small ones, which stand on a free
+   * tabletop under them if there is one (one each), else on the floor. A small piece whose table was
+   * carried off ends up on the floor.
+   */
   rebuildFurniture(): void {
     this.furnitureAt.clear();
-    for (const f of this.state.furniture) {
+    this.topAt.clear();
+    const small = (f: FurniturePlacement) => !!furnitureReg.get(f.defId).small;
+    for (const f of [...this.state.furniture.filter((f) => !small(f)), ...this.state.furniture.filter(small)]) {
       const def = furnitureReg.get(f.defId);
+      const k = tileKey(f.x, f.y);
+      const base = this.furnitureAt.get(k);
+      if (def.small && base && furnitureReg.get(base.defId).tabletop !== undefined && !this.topAt.has(k)) {
+        this.topAt.set(k, f);
+        continue;
+      }
       const { w, h } = footprint(def, f.rot);
       for (let y = f.y; y < f.y + h; y++) for (let x = f.x; x < f.x + w; x++) this.furnitureAt.set(tileKey(x, y), f);
     }
   }
 
+  /** The barricade on a door tile of this room, if any. */
+  barricadeAt(x: number, y: number): Barricade | undefined {
+    return this.kindAt(x, y) === 'door' ? this.state.barricades[tileKey(x, y)] : undefined;
+  }
+
   blocksMovement(x: number, y: number, kind: MovementKind): boolean {
     const k = this.kindAt(x, y);
     if (k === 'void') return true;
+    // Planks block everyone; proper doors open for the player (enemies never cross doors anyway).
+    const b = this.barricadeAt(x, y);
+    if (b && !BARRICADE_PASSABLE[b.tier]) return true;
     const o = this.obstacleAt(x, y);
     if (o && o.blocksMovement.includes(kind)) return true;
     const f = this.furnitureAt.get(tileKey(x, y));
@@ -177,7 +224,7 @@ export class RoomLayout {
   blocksProjectile(x: number, y: number, trajectory: TrajectoryKind): boolean {
     const k = this.kindAt(x, y);
     if (k === 'void') return true;
-    if (k === 'door') return false;
+    if (k === 'door') return !!this.barricadeAt(x, y);
     const o = this.obstacleAt(x, y);
     if (o && o.blocksProjectiles.includes(trajectory)) return true;
     const f = this.furnitureAt.get(tileKey(x, y));
@@ -197,6 +244,11 @@ export class RoomLayout {
 
   canPlaceFurniture(def: FurnitureDef, x: number, y: number, rot: number): boolean {
     const { w, h } = footprint(def, rot);
+    if (def.small && w === 1 && h === 1) {
+      const k = tileKey(x, y);
+      const base = this.furnitureAt.get(k);
+      if (base && furnitureReg.get(base.defId).tabletop !== undefined && !this.topAt.has(k)) return true;
+    }
     for (let ty = y; ty < y + h; ty++) for (let tx = x; tx < x + w; tx++) if (!this.isBuildable(tx, ty)) return false;
     return true;
   }
@@ -227,10 +279,56 @@ export class RoomLayout {
     }
   }
 
-  /** Template spawns still alive. */
-  liveSpawns(): SpawnPoint[] {
-    const dead = new Set(this.state.deadSpawnIds);
-    return this.spawns.filter((s) => !dead.has(s.spawnId));
+  /**
+   * Where each roster monster appears when the room loads: its template spawn tile, or (for monsters
+   * without one) the open floor tile nearest the room's centre.
+   */
+  rosterPlacements(): { record: MonsterRecord; x: number; y: number }[] {
+    const spawnAt = new Map(this.spawns.map((s) => [s.spawnId, s]));
+    let fallback: { x: number; y: number } | null | undefined;
+    const out: { record: MonsterRecord; x: number; y: number }[] = [];
+    for (const record of this.state.monsters) {
+      const sp = record.spawnId ? spawnAt.get(record.spawnId) : undefined;
+      if (sp) {
+        out.push({ record, x: sp.x, y: sp.y });
+        continue;
+      }
+      const door = record.door ? this.info.doors.find((d) => `${d.x},${d.y}` === record.door) : undefined;
+      if (door) {
+        const [ix, iy] = inward(door.dir);
+        const t = this.nearestOpenFloor(door.x + ix * 2 + 0.5, door.y + iy * 2 + 0.5);
+        if (t) {
+          out.push({ record, x: t.x + 0.5, y: t.y + 0.5 });
+          continue;
+        }
+      } else if (record.door) {
+        // Came in through a knocked-through wall: just inside that tile.
+        const [tx, ty] = record.door.split(',').map(Number) as [number, number];
+        const t = this.nearestOpenFloor(tx + 0.5, ty + 0.5);
+        if (t) {
+          out.push({ record, x: t.x + 0.5, y: t.y + 0.5 });
+          continue;
+        }
+      }
+      fallback ??= this.nearestOpenFloor(this.originX + this.w / 2, this.originY + this.h / 2);
+      if (fallback) out.push({ record, x: fallback.x + 0.5, y: fallback.y + 0.5 });
+    }
+    return out;
+  }
+
+  /** Open floor tile nearest a point, searching outward in rings. */
+  nearestOpenFloor(nearX: number, nearY: number): { x: number; y: number } | null {
+    const sx = Math.floor(nearX), sy = Math.floor(nearY);
+    for (let r = 0; r < Math.max(this.w, this.h); r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = sx + dx, y = sy + dy;
+          if (this.isOpenFloor(x, y) && !this.obstacleAt(x, y)?.hazard) return { x, y };
+        }
+      }
+    }
+    return null;
   }
 
   /** Room containing a global tile, by cell lookup. */

@@ -1,6 +1,6 @@
-import { Container, Graphics, Sprite } from 'pixi.js';
+import { Container, Graphics, Sprite, type Texture } from 'pixi.js';
 import {
-  TILE_PX, footprint, hashString, registry, tileKey, wallMask, type FurniturePlacement, type RoomLayout,
+  BARRICADE_TIERS, TILE_PX, footprint, hashString, registry, tileKey, wallMask, type FurniturePlacement, type RoomLayout,
 } from '@df/shared';
 import { tex } from '../engine/assets';
 
@@ -33,21 +33,26 @@ export class RoomRenderer {
         const c = Math.floor(255 * shade);
         f.tint = (c << 16) | (c << 8) | c;
         this.floor.addChild(f);
-        const surf = st.floorSurfaces[k];
-        if (surf) this.floor.addChild(this.sprite(`surf:${surf}`, px, py));
+        this.floor.addChild(this.sprite(`surf:${L.floorSurfaceAt(x, y)}`, px, py));
         if (kind === 'door') {
           const g = new Graphics().rect(px, py, TILE_PX, TILE_PX).fill({ color: 0x000000, alpha: 0.25 });
           this.floor.addChild(g);
+          const b = L.barricadeAt(x, y);
+          if (b) {
+            this.walls.addChild(this.sprite(`proc:barricade:${b.tier}`, px, py));
+            const frac = b.hp / BARRICADE_TIERS[b.tier]!.hp;
+            if (frac < 0.66) this.walls.addChild(this.sprite(`proc:cracks:${frac < 0.33 ? 2 : 1}`, px, py));
+          }
         }
       }
       if (!obs) continue;
       if (obs.height === 'none') {
         let key = obs.sprite;
-        if (obs.id === 'hole' && L.obstacleIdAt(x, y - 1) !== 'hole') key = 'proc:hole_top';
+        if (obs.id === 'missing_floor' && L.obstacleIdAt(x, y - 1) !== 'missing_floor') key = 'proc:hole_top';
         this.floor.addChild(this.sprite(key, px, py));
         continue;
       }
-      const wallSurf = st.wallSurfaces[k];
+      const wallSurf = L.wallSurfaceAt(x, y);
       if (obs.autotile) {
         // Faces point at whichever sides are open; shadows come from the lights (Shadows.ts).
         const key = `auto:${obs.autotile.set}:${wallMask(L, x, y)}`;
@@ -90,8 +95,11 @@ export class RoomRenderer {
       }
       const def = registry.furniture.get(f.defId);
       const { w, h } = footprint(def, f.rot);
-      v.position.set((f.x + w / 2) * TILE_PX, (f.y + h / 2) * TILE_PX);
-      v.zIndex = f.y + h - 0.5;
+      // Small pieces on a tabletop stand on its top surface and draw just in front of it.
+      const base = this.layout.onTopOf(f);
+      const lift = base ? registry.furniture.get(base.defId).tabletop ?? 0 : 0;
+      v.position.set((f.x + w / 2) * TILE_PX, (f.y + h / 2) * TILE_PX - lift);
+      v.zIndex = base ? base.y + footprint(registry.furniture.get(base.defId), base.rot).h - 0.49 : f.y + h - 0.5;
     }
   }
 
@@ -106,7 +114,7 @@ export class RoomRenderer {
 const placementKey = (f: FurniturePlacement) => `${f.defId}:${f.rot}`;
 
 /** A furniture view centred on its footprint, rotated in quarter turns. */
-export function buildFurnitureView(defId: string, rot: number): Container {
+export function buildFurnitureView(defId: string, rot: number, texture: (key: string) => Texture = tex, tint?: number): Container {
   const def = registry.furniture.get(defId);
   const c = new Container();
   const inner = new Container();
@@ -114,8 +122,9 @@ export function buildFurnitureView(defId: string, rot: number): Container {
   tiles.forEach((row, ry) =>
     row.forEach((key, rx) => {
       if (!key) return;
-      const s = new Sprite(tex(key));
+      const s = new Sprite(texture(key));
       s.position.set(rx * TILE_PX, ry * TILE_PX);
+      if (tint !== undefined) s.tint = tint;
       inner.addChild(s);
     }),
   );

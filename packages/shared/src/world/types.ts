@@ -1,3 +1,4 @@
+import type { UtilityTile } from './utilities';
 import type { CellCoord, RoomTag } from '../content/types';
 
 /** A concrete item the player owns / that lies on the ground. Mutable per-instance data lives in `data`. */
@@ -8,9 +9,11 @@ export interface ItemInstance {
    * Per-instance state. Conventions:
    *   armorHalves – remaining gray half-hearts on armor
    *   count       – remaining tool uses / roll coverage (stacks up to MAX_STACK)
-   *   amount      – gold amount on a gold pickup
+   *   amount      – cash amount on a cash pickup
    */
   data: Record<string, number | string | boolean>;
+  /** Items carried inside this one (a toolkit's slots; null = empty). */
+  contents?: (ItemInstance | null)[];
 }
 
 export type Dir = 'n' | 's' | 'e' | 'w';
@@ -35,6 +38,13 @@ export interface RoomInfo {
   cells: CellCoord[];
   doors: DoorInfo[];
   tags: RoomTag[];
+  /** Fixed at generation: floor baseline + distance from the lobby (see world/difficulty.ts). */
+  difficulty: number;
+  /**
+   * True once the room's door list is final (the player has been inside). Rooms behind its doors
+   * exist; unexpanded rooms may still gain doors to new neighbours.
+   */
+  expanded: boolean;
 }
 
 export interface FloorState {
@@ -43,10 +53,10 @@ export interface FloorState {
   /** Sparse, unbounded map of "cx,cy" → room id. */
   cells: Record<string, string>;
   rooms: Record<string, RoomInfo>;
-  /** Room containing the up stairs (or safe room on floor 1) – where you arrive. */
-  entryRoomId: string;
-  /** Room containing the down stairs, if any. */
-  stairsDownRoomId?: string;
+  /** The floor's entry room (safe room on floor 1, stairs up below): where you arrive; has the elevator. */
+  lobbyRoomId: string;
+  /** The stairs room last used to go down from this floor: where the stairs up from below lead. */
+  lastStairsDown?: string;
 }
 
 export interface FurniturePlacement {
@@ -59,6 +69,8 @@ export interface FurniturePlacement {
   rot: number;
   /** Container contents, for container furniture. */
   contents?: (ItemInstance | null)[];
+  /** Per-piece state (e.g. a For Rent sign's `closed` listing). */
+  data?: Record<string, number | string | boolean>;
 }
 
 export interface GroundItem {
@@ -70,14 +82,42 @@ export interface GroundItem {
 }
 
 /** Persistent, mutable state of a single room: diffs over its template. */
+/**
+ * A monster persisted in a room's roster. Template spawns never respawn; later, incursions add
+ * records without a `spawnId` (placed near the door they came through).
+ */
+export interface MonsterRecord {
+  id: string;
+  defId: string;
+  /** Remaining health as a fraction of max (0..1]; absent = full health. */
+  hpFrac?: number;
+  /** Template spawn ("mx,my") the monster stands on when the room loads. */
+  spawnId?: string;
+  /** Health multiplier fixed at generation (difficulty beyond the strongest content); absent = 1. */
+  hpMul?: number;
+  /** Door tile ("x,y") it came in through, for monsters that spilled in: placed just inside it. */
+  door?: string;
+}
+
+/** A barricade on one of a room's door tiles. Tier 1 (planks) also blocks the player. */
+export interface Barricade {
+  tier: number;
+  hp: number;
+}
+
 export interface RoomState {
   id: string;
   floor: number;
-  owned: boolean;
+  /** Actor (player / realtor) owning the room, or null. Generated rooms may hold WORLD_OWNER. */
+  ownerId: string | null;
   discovered: boolean;
   visited: boolean;
-  /** Template spawn ids that have been killed. Enemies never respawn (for now). */
-  deadSpawnIds: string[];
+  /** Every monster in the room. Empty = cleared. */
+  monsters: MonsterRecord[];
+  /** Door tile "x,y" (this room's side) → barricade. */
+  barricades: Record<string, Barricade>;
+  /** Day an owned room became insecure; lost if still insecure at the end of a later day. */
+  insecureSince?: number;
   /** "x,y" (global) → obstacle id, or null for "obstacle removed". */
   tileOverrides: Record<string, string | null>;
   /** "x,y" → floor surface id. */
@@ -86,6 +126,8 @@ export interface RoomState {
   wallSurfaces: Record<string, string>;
   furniture: FurniturePlacement[];
   groundItems: GroundItem[];
+  /** "x,y" (global) → pipe / wire segments laid there (P6). Absent = none anywhere. */
+  utilities?: Record<string, UtilityTile>;
 }
 
 export interface Hotbar {
@@ -104,7 +146,7 @@ export interface PlayerState {
   /** Global tile coordinates. */
   x: number;
   y: number;
-  gold: number;
+  cash: number;
   /** Current red health in half-hearts (max is derived from base + passives). */
   redHalves: number;
   baseRedMaxHalves: number;
@@ -132,4 +174,4 @@ export interface WorldState {
 }
 
 /** Identifies a separately persisted document. */
-export type DocKey = 'world' | `floor:${number}` | `room:${string}` | `player:${string}` | `global:${string}`;
+export type DocKey = 'world' | `floor:${number}` | `region:${number}:${string}` | `room:${string}` | `player:${string}` | `global:${string}`;

@@ -1,12 +1,19 @@
 import {
-  applyCommand, emptyWorld, migrate, newWorldCommands, uid, type Command, type WorldState,
+  SaveTooOldError, applyCommand, emptyWorld, migrate, newWorldCommands, uid, type Command, type WorldState,
 } from '@df/shared';
 import { SyncClient } from '../net/SyncClient';
 
 const LS_PLAYER = 'df.playerId';
 const LS_WORLD = 'df.world';
 const LS_OUTBOX = 'df.outbox';
+const LS_EPOCH = 'df.devEpoch';
 const FLUSH_INTERVAL_MS = 15000;
+/**
+ * Dev builds only: bump to make every dev browser drop its local save (world, outbox and player id)
+ * on its next load, so testing starts from a new game. Pair it with deleting the dev server's
+ * database (`apps/server/data/`), or the old world would come back from the server.
+ */
+const DEV_SAVE_EPOCH = 8;
 
 function lsGet(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -27,6 +34,8 @@ export class Session {
   private saveTimer: number | null = null;
   private flushing = false;
   online = false;
+  /** Bumped on every dispatched command: views that summarise the world (maps) redraw when it changes. */
+  changes = 0;
   readonly sync = new SyncClient();
 
   private constructor() {
@@ -39,15 +48,32 @@ export class Session {
   }
 
   static async boot(): Promise<Session> {
+    if (import.meta.env.DEV && lsGet(LS_EPOCH) !== String(DEV_SAVE_EPOCH)) {
+      try {
+        for (const k of [LS_WORLD, LS_OUTBOX, LS_PLAYER]) localStorage.removeItem(k);
+      } catch { /* storage unavailable */ }
+      lsSet(LS_EPOCH, String(DEV_SAVE_EPOCH));
+    }
     const s = new Session();
+    // Saves too old to upgrade are dropped: the game starts over.
+    const load = (raw: Record<string, unknown>): WorldState | null => {
+      try {
+        return migrate(raw);
+      } catch (e) {
+        if (e instanceof SaveTooOldError) return null;
+        throw e;
+      }
+    };
     const local = lsGet(LS_WORLD);
-    if (local) {
-      s.state = migrate(JSON.parse(local));
+    const localState = local ? load(JSON.parse(local)) : null;
+    if (localState) {
+      s.state = localState;
       s.outbox = JSON.parse(lsGet(LS_OUTBOX) ?? '[]');
     } else {
       const remote = await s.sync.fetchState(s.playerId);
-      if (remote && remote !== 'missing') {
-        s.state = migrate(remote as unknown as Record<string, unknown>);
+      const remoteState = remote && remote !== 'missing' ? load(remote as unknown as Record<string, unknown>) : null;
+      if (remoteState) {
+        s.state = remoteState;
         s.online = true;
       } else {
         for (const c of newWorldCommands(s.playerId)) s.dispatch(c);
@@ -69,6 +95,7 @@ export class Session {
     cmd.actorId ??= this.playerId;
     cmd.at ??= Date.now();
     applyCommand(this.state, cmd);
+    this.changes++;
     // Coalesce consecutive player patches so frequent HP/hotbar updates don't flood the outbox.
     const last = this.outbox[this.outbox.length - 1];
     if (cmd.type === 'playerUpdated' && last?.type === 'playerUpdated' && last.playerId === cmd.playerId && !this.flushing) {

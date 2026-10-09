@@ -1,26 +1,28 @@
 import type { WeaponDef } from '../../types';
-import dagger from './dagger';
-import shortSword from './short_sword';
-import broadsword from './broadsword';
-import mace from './mace';
-import spear from './spear';
-import battleAxe from './battle_axe';
-import shortbow from './shortbow';
-import crossbow from './crossbow';
-import fireWand from './fire_wand';
-import frostStaff from './frost_staff';
-import alchemistFlask from './alchemist_flask';
+import boxCutter from './box_cutter';
+import crowbar from './crowbar';
+import sledgehammer from './sledgehammer';
+import pipeWrench from './pipe_wrench';
+import pushBroom from './push_broom';
+import fireAxe from './fire_axe';
+import nailGun from './nail_gun';
+import rivetGun from './rivet_gun';
+import blowtorch from './blowtorch';
+import fireExtinguisher from './fire_extinguisher';
+import cleaningSpray from './cleaning_spray';
+import clawHammer from './claw_hammer';
 
 export default [
-  dagger,
-  shortSword,
-  broadsword,
-  mace,
-  spear,
-  battleAxe,
-  shortbow,
-  crossbow,
-  fireWand,
-  frostStaff,
-  alchemistFlask,
+  boxCutter,
+  crowbar,
+  sledgehammer,
+  pipeWrench,
+  pushBroom,
+  fireAxe,
+  nailGun,
+  rivetGun,
+  blowtorch,
+  fireExtinguisher,
+  cleaningSpray,
+  clawHammer,
 ] satisfies WeaponDef[];

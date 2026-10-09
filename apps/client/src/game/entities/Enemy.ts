@@ -9,7 +9,10 @@ export class Enemy extends Actor {
   hp: number;
   maxHp: number;
   /** Template spawn id (persistent kill tracking). Summoned enemies have none. */
-  readonly spawnId?: string;
+  /** Roster record id; absent for transient enemies (summons), which are never persisted. */
+  readonly monsterId?: string;
+  /** The room it's in (its roster's owner); updated as it walks between rooms of an area. */
+  roomId = '';
   readonly moveState: BehaviorState = {};
   readonly attackStates: BehaviorState[];
   /** While airborne (hopping, etc.) the enemy ignores hazards and doesn't deal contact damage. */
@@ -23,7 +26,7 @@ export class Enemy extends Actor {
   private hazardCd = 0;
   age = 0;
 
-  constructor(defId: string, x: number, y: number, opts: { spawnId?: string; hpMul?: number } = {}) {
+  constructor(defId: string, x: number, y: number, opts: { monsterId?: string; hpMul?: number; hpFrac?: number } = {}) {
     const def = registry.enemies.get(defId);
     super(def.sprite, def.scale ?? 1, def.tint);
     this.def = def;
@@ -32,8 +35,9 @@ export class Enemy extends Actor {
     this.radius = def.radius;
     this.team = 'enemy';
     this.movementKind = def.movementKind;
-    this.hp = this.maxHp = def.hp * (opts.hpMul ?? 1);
-    this.spawnId = opts.spawnId;
+    this.maxHp = def.hp * (opts.hpMul ?? 1);
+    this.hp = this.maxHp * (opts.hpFrac ?? 1);
+    this.monsterId = opts.monsterId;
     this.light = def.light;
     this.attackStates = def.attacks.map(() => ({}));
     if (def.movementKind === 'fly') this.shadow.alpha = 0.6;

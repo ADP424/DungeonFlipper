@@ -1,18 +1,18 @@
 import type { PassiveDef } from '../../types';
-import heartContainer from './heart_container';
-import swiftBoots from './swift_boots';
-import whetstone from './whetstone';
-import fletching from './fletching';
-import quickdraw from './quickdraw';
-import twinShot from './twin_shot';
-import longReach from './long_reach';
+import energyDrink from './energy_drink';
+import runningShoes from './running_shoes';
+import ductTape from './duct_tape';
+import precisionBits from './precision_bits';
+import workGloves from './work_gloves';
+import doubleNozzle from './double_nozzle';
+import extensionPole from './extension_pole';
 
 export default [
-  heartContainer,
-  swiftBoots,
-  whetstone,
-  fletching,
-  quickdraw,
-  twinShot,
-  longReach,
+  energyDrink,
+  runningShoes,
+  ductTape,
+  precisionBits,
+  workGloves,
+  doubleNozzle,
+  extensionPole,
 ] satisfies PassiveDef[];

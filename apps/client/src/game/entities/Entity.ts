@@ -33,6 +33,8 @@ export abstract class Entity {
 export abstract class Actor extends Entity {
   readonly sprite: Sprite;
   readonly shadow: Sprite;
+  /** The sprite's texture key (its silhouette casts the shadow). */
+  readonly spriteKey: string;
   flash = 0;
   /** Knockback velocity, decays every frame. */
   kx = 0;
@@ -44,6 +46,7 @@ export abstract class Actor extends Entity {
     this.shadow.anchor.set(0.5, 0.5);
     this.shadow.scale.set(scale);
     this.shadow.y = 6 * scale;
+    this.spriteKey = spriteKey;
     this.sprite = new Sprite(tex(spriteKey));
     this.sprite.anchor.set(0.5, 0.75);
     this.sprite.scale.set(scale);

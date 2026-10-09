@@ -10,17 +10,28 @@ export function createItem(defId: string, id: string = uid(), data: ItemInstance
   const d: ItemInstance['data'] = {};
   if (def.kind === 'armor') d.armorHalves = def.halves;
   if (def.kind === 'tool') d.count = def.uses;
+  if (def.kind === 'weapon' && def.tool) d.count = def.tool.uses;
   if (def.kind === 'roll') d.count = def.coverage;
-  return { uid: id, defId, data: { ...d, ...data } };
+  const inst: ItemInstance = { uid: id, defId, data: { ...d, ...data } };
+  if (def.kind === 'kit') inst.contents = Array(def.slots).fill(null);
+  return inst;
+}
+
+/** What a toolkit carries: renovation gear (tools, rolls, and weapons that double as tools). */
+export function kitAccepts(inst: ItemInstance | null): boolean {
+  if (!inst) return true;
+  const def = itemDef(inst);
+  return def.kind === 'tool' || def.kind === 'roll' || (def.kind === 'weapon' && !!def.tool);
 }
 
 export function itemDef(inst: ItemInstance): ItemDef {
   return items.get(inst.defId);
 }
 
+/** Anything usable goes in either hand: left click uses the main hand, right click the off hand. */
 const slotKinds: Record<'main' | 'off' | 'armor', ItemKind[]> = {
   main: ['weapon', 'tool', 'roll'],
-  off: ['weapon'],
+  off: ['weapon', 'tool', 'roll'],
   armor: ['armor'],
 };
 
@@ -38,14 +49,17 @@ export function countLeft(inst: ItemInstance): number {
   return typeof inst.data.count === 'number' ? inst.data.count : 0;
 }
 
-/** Tools and rolls stack: instances of the same def merge their counts, up to MAX_STACK. */
+/**
+ * Tools and rolls stack: instances of the same def merge their counts, up to MAX_STACK. Worn items
+ * (a pried-off barricade keeps its remaining `hp`) only stack with identically worn ones.
+ */
 export function isStackable(inst: ItemInstance): boolean {
   const kind = itemDef(inst).kind;
   return kind === 'tool' || kind === 'roll';
 }
 
 export function canStack(a: ItemInstance | null, b: ItemInstance | null): boolean {
-  return !!a && !!b && a.defId === b.defId && isStackable(a);
+  return !!a && !!b && a.defId === b.defId && isStackable(a) && a.data.hp === b.data.hp;
 }
 
 /**
@@ -66,7 +80,7 @@ export function mergeStack(into: ItemInstance, from: ItemInstance): number {
  */
 export function addToHotbar(hb: Hotbar, inst: ItemInstance): boolean {
   if (isStackable(inst)) {
-    for (const s of [hb.main, ...hb.slots]) if (canStack(s, inst) && mergeStack(s!, inst) === 0) return true;
+    for (const s of [hb.main, hb.off, ...hb.slots]) if (canStack(s, inst) && mergeStack(s!, inst) === 0) return true;
   }
   const kind = itemDef(inst).kind;
   if (kind === 'armor' && !hb.armor) { hb.armor = inst; return true; }

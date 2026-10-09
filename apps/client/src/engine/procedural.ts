@@ -213,6 +213,86 @@ export const drawers: Record<string, Drawer> = {
     heartShape(ctx, '#e0303c', '#ff8a8a', 2);
     px(ctx, '#ffe070', 7, 5, 2, 6); px(ctx, '#ffe070', 5, 7, 6, 2);
   },
+  // Utilities (P6): sources, fixtures and the tools that lay pipe and wire.
+  generator_l(ctx) {
+    px(ctx, '#2a2e2a', 1, 4, 15, 11); px(ctx, '#4a6a4a', 2, 5, 14, 9); px(ctx, '#5f845f', 2, 5, 14, 2);
+    for (let y = 8; y < 13; y += 2) px(ctx, '#2f442f', 4, y, 9, 1);
+    px(ctx, '#d8d0b0', 3, 2, 3, 3); px(ctx, '#2a2e2a', 4, 1, 1, 1);
+  },
+  generator_r(ctx) {
+    px(ctx, '#2a2e2a', 0, 4, 15, 11); px(ctx, '#4a6a4a', 0, 5, 14, 9); px(ctx, '#5f845f', 0, 5, 14, 2);
+    px(ctx, '#1a1c1a', 4, 8, 6, 4); px(ctx, '#80ff90', 5, 9, 2, 2); px(ctx, '#ffd040', 8, 9, 1, 2);
+  },
+  water_main(ctx) {
+    px(ctx, '#3a4a5a', 5, 3, 6, 12); px(ctx, '#5a7a9a', 6, 4, 4, 10); px(ctx, '#8ab0d0', 6, 4, 1, 10);
+    px(ctx, '#c8323c', 3, 5, 10, 2); px(ctx, '#e85a60', 3, 5, 10, 1); px(ctx, '#3a4a5a', 7, 2, 2, 3);
+  },
+  sink(ctx) {
+    px(ctx, '#8a8f99', 2, 6, 12, 8); px(ctx, '#e8ecf2', 2, 5, 12, 2); px(ctx, '#b8c4d0', 4, 7, 8, 4);
+    px(ctx, '#9aa6b4', 7, 2, 2, 4); px(ctx, '#9aa6b4', 7, 2, 4, 1);
+  },
+  toilet(ctx) {
+    px(ctx, '#d8dce4', 4, 2, 8, 5); px(ctx, '#f2f4f8', 4, 2, 8, 1);
+    px(ctx, '#d8dce4', 3, 7, 10, 6); px(ctx, '#b8c0cc', 5, 8, 6, 4); px(ctx, '#c8ccd4', 5, 13, 6, 2);
+  },
+  fridge(ctx) {
+    px(ctx, '#c8ccd4', 3, 0, 10, 16); px(ctx, '#eef0f4', 4, 1, 8, 14); px(ctx, '#aab0bc', 4, 6, 8, 1);
+    px(ctx, '#7a808c', 10, 2, 1, 3); px(ctx, '#7a808c', 10, 8, 1, 4);
+  },
+  toolkit(ctx) {
+    px(ctx, '#7a1e1e', 1, 6, 14, 8); px(ctx, '#c8323c', 1, 6, 14, 3); px(ctx, '#e85a60', 1, 6, 14, 1);
+    px(ctx, '#3a3a40', 5, 3, 6, 1); px(ctx, '#3a3a40', 5, 3, 1, 3); px(ctx, '#3a3a40', 10, 3, 1, 3);
+    px(ctx, '#d8d0b0', 7, 8, 2, 2);
+  },
+  wire_spool(ctx) {
+    px(ctx, '#7a5a3a', 3, 3, 10, 2); px(ctx, '#7a5a3a', 3, 11, 10, 2);
+    px(ctx, '#e8a020', 4, 5, 8, 6); for (let y = 5; y < 11; y += 2) px(ctx, '#b87810', 4, y, 8, 1);
+    px(ctx, '#e8a020', 12, 7, 3, 1); px(ctx, '#ffd040', 14, 6, 1, 1);
+  },
+  pipe_bundle(ctx) {
+    for (let i = 0; i < 3; i++) {
+      px(ctx, '#5a7a9a', 2, 4 + i * 3, 12, 2); px(ctx, '#8ab0d0', 2, 4 + i * 3, 12, 1);
+      px(ctx, '#3a4a5a', 13, 3 + i * 3, 2, 4);
+    }
+    px(ctx, '#c8323c', 6, 3, 1, 10);
+  },
+  // Phone app icons: light glyphs, drawn over the app tile's colour (styles.css).
+  app_messages(ctx) {
+    pixels(ctx, [
+      '.wwwwwwwwww.', 'wwwwwwwwwwww', 'wwbbwwbbwwbb', 'wwbbwwbbwwbb', 'wwwwwwwwwwww', '.wwwwwwwwww.', '..ww........', '.w..........',
+    ], { w: '#fffaf0', b: '#5a8ad8' }, 2, 3);
+  },
+  app_map(ctx) {
+    pixels(ctx, [
+      'aaaabbbbaaaa', 'aaaabbbbaaaa', 'aacabbbbaaaa', 'aaaabbbbacaa', 'aaaabbcbaaaa', 'acaabbbbaaaa', 'aaaabbbbaaca', 'aaaabbbbaaaa', 'aaaabbbbaaaa',
+    ], { a: '#fffaf0', b: '#d8e8c8', c: '#c8323c' }, 2, 3);
+  },
+  app_hardware(ctx) {
+    pixels(ctx, [
+      '.....hhhhh..', '....hhhhhh..', '....hhhh....', '....shh.....', '...ss.......', '..ss........', '.ss.........', 'ss..........',
+    ], { h: '#d8dce4', s: '#c8a070' }, 2, 4);
+  },
+  app_tenants(ctx) {
+    pixels(ctx, [
+      '....ffff....', '...ffffff...', '...ffffff...', '...ffffff...', '....ffff....', '.....ff.....', '..cccccccc..', '.cccccccccc.', '.cccccccccc.',
+    ], { f: '#ffe0c0', c: '#fffaf0' }, 2, 3);
+  },
+  app_sleep(ctx) {
+    pixels(ctx, [
+      '...mmm......', '..mm........', '.mm.........', '.mm......zzz', '.mm.......z.', '.mm......zzz', '..mm........', '...mmmm.....', '.....mmm....',
+    ], { m: '#fff2b0', z: '#fffaf0' }, 2, 3);
+  },
+  app_rooms(ctx) {
+    pixels(ctx, [
+      'ww.ww.ww.ww.', 'w..........w', '.....w......', 'w....w.....w', '.....w......', 'w..........w', '.wwwww.ww...', 'w....w.....w', '.....w......', 'ww.ww.ww.ww.',
+    ], { w: '#fffaf0' }, 2, 3);
+  },
+  cash(ctx) {
+    // A folded dollar bill.
+    px(ctx, '#2e5a2a', 1, 4, 14, 8); px(ctx, '#6fb05a', 2, 5, 12, 6); px(ctx, '#9bd47e', 2, 5, 12, 1);
+    ctx.strokeStyle = '#2e5a2a'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(8, 8, 2.2, 0, Math.PI * 2); ctx.stroke();
+    px(ctx, '#2e5a2a', 7.5, 5.5, 1, 5);
+  },
   coin(ctx) {
     ctx.fillStyle = '#b8860b'; ctx.beginPath(); ctx.arc(8, 8, 5, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#ffd34a'; ctx.beginPath(); ctx.arc(8, 8, 4, 0, Math.PI * 2); ctx.fill();
@@ -260,6 +340,65 @@ export const drawers: Record<string, Drawer> = {
     px(ctx, '#e0804a', 4, 4, 8, 1);
     px(ctx, '#b8875a', 1, 12, 14, 3);
     px(ctx, '#5a3a20', 1, 15, 14, 1);
+  },
+  /** A For Rent sign on a little stand. */
+  sign(ctx) {
+    px(ctx, '#5a4a3a', 7, 8, 2, 8);
+    px(ctx, '#3a2e24', 5, 14, 6, 2);
+    px(ctx, '#e8e0c8', 2, 2, 12, 7);
+    px(ctx, '#b02020', 2, 2, 12, 2);
+    px(ctx, '#3a3a3a', 4, 5, 8, 1); px(ctx, '#3a3a3a', 4, 7, 5, 1);
+  },
+  /** The company flag (item icon and planted flag). */
+  flag(ctx) {
+    px(ctx, '#5a4a3a', 3, 1, 1, 15);
+    px(ctx, '#3a2e24', 2, 14, 3, 2);
+    px(ctx, '#d0a030', 4, 2, 9, 6);
+    px(ctx, '#f0d070', 4, 2, 9, 1);
+    px(ctx, '#7a2a20', 6, 4, 2, 2); px(ctx, '#7a2a20', 9, 4, 2, 2);
+  },
+  /** Barricades by tier: planks, a security door, a steel door, a blast door. */
+  barricade(ctx, arg) {
+    const tier = Number(arg ?? 1);
+    if (tier === 1) {
+      px(ctx, '#5a3a20', 1, 0, 14, 16);
+      for (const y of [2, 7, 12]) { px(ctx, '#b8875a', 0, y, 16, 3); px(ctx, '#8a5a30', 0, y + 2, 16, 1); }
+      px(ctx, '#d0d0d0', 3, 3, 1, 1); px(ctx, '#d0d0d0', 12, 8, 1, 1); px(ctx, '#d0d0d0', 4, 13, 1, 1);
+      return;
+    }
+    const body = tier === 2 ? '#8a7a5a' : tier === 3 ? '#7a828e' : '#4a525e';
+    const edge = tier === 2 ? '#5a4a30' : tier === 3 ? '#4a525e' : '#2a2e36';
+    px(ctx, edge, 0, 0, 16, 16);
+    px(ctx, body, 1, 1, 14, 14);
+    if (tier === 4) for (let i = 0; i < 16; i += 4) px(ctx, '#d0b030', i, 13, 2, 2);
+    px(ctx, '#d0c890', 11, 7, 2, 2);
+  },
+  /** Damage overlay: 1 = cracked, 2 = badly cracked. */
+  cracks(ctx, arg) {
+    const n = Number(arg ?? 1);
+    const lines = [[3, 2], [4, 3], [4, 4], [5, 5], [11, 9], [10, 10], [10, 11], [9, 12]];
+    for (const [x, y] of lines.slice(0, n === 1 ? 4 : 8)) px(ctx, '#1a1410', x!, y!, 1, 1);
+    if (n > 1) { px(ctx, '#1a1410', 7, 6, 2, 1); px(ctx, '#1a1410', 12, 3, 1, 3); }
+  },
+  /** The portal: a glowing crack in the wall. */
+  portal(ctx) {
+    px(ctx, '#3a3020', 5, 1, 6, 15);
+    const crack = [[8, 1], [7, 3], [8, 5], [9, 7], [8, 9], [7, 11], [8, 13], [8, 15]];
+    for (const [x, y] of crack) {
+      px(ctx, '#fff4c0', x!, y!, 2, 2);
+      px(ctx, '#e8c860', x! - 1, y!, 1, 2);
+      px(ctx, '#e8c860', x! + 2, y!, 1, 2);
+    }
+  },
+  /** Lobby elevator: steel doors with a floor indicator. */
+  elevator(ctx) {
+    px(ctx, '#4a4e58', 1, 0, 14, 16);
+    px(ctx, '#8a909c', 2, 3, 12, 13);
+    px(ctx, '#b4bac6', 2, 3, 5, 13); px(ctx, '#b4bac6', 9, 3, 5, 13);
+    px(ctx, '#3a3e48', 7, 3, 2, 13);
+    px(ctx, '#1a1c22', 5, 1, 6, 1);
+    px(ctx, '#ffb040', 7, 1, 2, 1);
+    px(ctx, '#2a2c32', 1, 15, 14, 1);
   },
   shadow(ctx) {
     ctx.fillStyle = 'rgba(0,0,0,0.35)';

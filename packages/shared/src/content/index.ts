@@ -13,6 +13,7 @@ import toolDefs from './items/tools';
 import rollDefs from './items/rolls';
 import passiveDefs from './items/passives';
 import pickupDefs from './items/pickups';
+import kitDefs from './items/kits';
 import healthLayerDefs from './healthLayers';
 import enemyDefs from './enemies';
 import bossDefs from './bosses';
@@ -29,7 +30,7 @@ export function registerAllContent(): void {
   reg.surfaces.registerAll(surfaceDefs);
   reg.furniture.registerAll(furnitureDefs);
   reg.projectiles.registerAll(projectileDefs);
-  for (const list of [weaponDefs, armorDefs, toolDefs, rollDefs, passiveDefs, pickupDefs]) {
+  for (const list of [weaponDefs, armorDefs, toolDefs, rollDefs, passiveDefs, pickupDefs, kitDefs]) {
     reg.items.registerAll(list);
   }
   reg.healthLayers.registerAll(healthLayerDefs);
@@ -67,12 +68,20 @@ export function validateContent(): string[] {
         if (!e) continue;
         if ('obstacle' in e && !reg.obstacles.has(e.obstacle)) out.push(`template ${t.id}: unknown obstacle ${e.obstacle}`);
         if ('enemy' in e && !reg.enemies.has(e.enemy)) out.push(`template ${t.id}: unknown enemy ${e.enemy}`);
+        if ('slot' in e) {
+          for (const id of e.slot.enemies ?? []) if (!reg.enemies.has(id)) out.push(`template ${t.id}: unknown enemy ${id}`);
+          if (e.slot.enemies && !e.slot.enemies.length) out.push(`template ${t.id}: empty enemy list in slot '${ch}'`);
+        }
         if ('furniture' in e && !reg.furniture.has(e.furniture)) out.push(`template ${t.id}: unknown furniture ${e.furniture}`);
       }
     }
+    for (const s of [t.floorSurface, t.wallSurface]) if (s && !reg.surfaces.has(s)) out.push(`template ${t.id}: unknown surface ${s}`);
     for (const f of t.furniture ?? []) {
       if (!reg.furniture.has(f.def)) out.push(`template ${t.id}: unknown furniture ${f.def}`);
-      for (const c of f.contents ?? []) if (c && !reg.items.has(c)) out.push(`template ${t.id}: unknown item ${c}`);
+      for (const c of f.contents ?? []) {
+        if (!c) continue;
+        for (const id of typeof c === 'string' ? [c] : [c.id, ...c.contents]) if (!reg.items.has(id)) out.push(`template ${t.id}: unknown item ${id}`);
+      }
     }
   }
   for (const lt of reg.lootTables.all()) {
@@ -81,18 +90,20 @@ export function validateContent(): string[] {
       if (sum > 1 + 1e-6) out.push(`loot table ${lt.id}: entry chances sum to ${sum} > 1`);
       for (const e of d.entries) {
         if ('item' in e && !reg.items.has(e.item)) out.push(`loot table ${lt.id}: unknown item ${e.item}`);
-        if ('furniture' in e && !reg.furniture.has(e.furniture)) out.push(`loot table ${lt.id}: unknown furniture ${e.furniture}`);
       }
     }
   }
   for (const e of reg.enemies.all()) {
     if (e.lootTable && !reg.lootTables.has(e.lootTable)) out.push(`enemy ${e.id}: unknown loot table ${e.lootTable}`);
+    if (!(e.threat > 0)) out.push(`enemy ${e.id}: threat must be positive`);
+    if (e.boss && !reg.roomTemplates.all().some((t) => t.tags.includes('boss'))) out.push(`enemy ${e.id}: no boss room template`);
   }
   for (const i of reg.items.all()) {
     if (i.kind === 'weapon' && i.attack.type === 'ranged' && !reg.projectiles.has(i.attack.projectile)) {
       out.push(`item ${i.id}: unknown projectile ${i.attack.projectile}`);
     }
     if (i.kind === 'roll' && !reg.surfaces.has(i.surface)) out.push(`item ${i.id}: unknown surface ${i.surface}`);
+    if (i.kind === 'weapon' && i.tool && !(i.tool.uses > 0)) out.push(`item ${i.id}: tool uses must be positive`);
   }
   for (const o of reg.obstacles.all()) {
     if (o.autotile && !o.connectGroup) out.push(`obstacle ${o.id}: autotiled walls need a connectGroup`);
