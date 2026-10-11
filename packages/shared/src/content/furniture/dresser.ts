@@ -5,7 +5,6 @@ export default {
   name: 'Dresser',
   size: { w: 1, h: 1 },
   sprite: 'furniture/dresser',
-  rotatable: true,
   height: 1.1,
   blocksMovement: ['walk'],
   blocksProjectiles: ['straight'],

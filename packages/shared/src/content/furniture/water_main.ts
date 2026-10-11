@@ -6,7 +6,6 @@ export default {
   name: 'Water Main',
   size: { w: 1, h: 1 },
   sprite: 'furniture/water_main',
-  rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],
   height: 0.8,

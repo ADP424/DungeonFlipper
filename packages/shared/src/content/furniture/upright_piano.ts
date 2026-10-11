@@ -5,7 +5,6 @@ export default {
   name: 'Upright Piano',
   size: { w: 2, h: 1 },
   sprite: 'furniture/upright_piano',
-  rotatable: true,
   height: 1.1,
   blocksMovement: ['walk'],
   blocksProjectiles: ['straight'],

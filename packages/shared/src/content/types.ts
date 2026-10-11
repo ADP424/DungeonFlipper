@@ -91,10 +91,11 @@ export interface FurnitureDef {
   name: string;
   /** Footprint (tiles it stands on) facing south. Odd facings swap w/h. */
   size: { w: number; h: number };
-  /** Art folder with three views: `<sprite>/south.png`, `north.png` and `side.png` (facing east; west mirrors it). */
+  /**
+   * Art folder with a view per facing: `<sprite>/south.png`, `north.png` and `side.png` (facing east; west
+   * mirrors it). Only south is required: a missing north or side is drawn as south.
+   */
   sprite: SpriteKey;
-  /** Whether it can be turned to other facings (then it needs their art, or falls back). */
-  rotatable: boolean;
   /**
    * What it turns around, in tiles from the footprint's top-left at facing 0: a cell centre or a grid
    * corner. Default: chosen from the shape (`defaultPivot` in world/furniture.ts).

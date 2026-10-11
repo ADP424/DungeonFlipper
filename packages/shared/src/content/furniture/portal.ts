@@ -6,7 +6,6 @@ export default {
   name: 'The Crack',
   size: { w: 1, h: 1 },
   sprite: 'furniture/portal',
-  rotatable: false,
   // A crack of light: it casts no shadow.
   height: 0,
   blocksMovement: ['walk', 'fly'],

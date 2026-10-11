@@ -5,7 +5,6 @@ export default {
   name: 'Fridge',
   size: { w: 1, h: 1 },
   sprite: 'furniture/fridge',
-  rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: ['straight'],
   height: 1.6,

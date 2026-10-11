@@ -42,6 +42,7 @@ export type Command = Base & (
   | { type: 'playerCreated'; player: PlayerState }
   | { type: 'playerMoved'; playerId: string; floor: number; roomId: string; x: number; y: number }
   | { type: 'playerUpdated'; playerId: string; patch: PlayerPatch }
+  /** They reappear at `respawn` with what they carried (the bill and the lost day: `deathCommands`, `slept`). */
   | { type: 'playerDied'; playerId: string; respawn: { floor: number; roomId: string; x: number; y: number }; redHalves: number }
   | { type: 'monsterKilled'; roomId: string; monsterId: string }
   /** Persist monsters' health when leaving a room (records not listed are dropped). */
@@ -214,7 +215,6 @@ export function applyCommand(state: WorldState, cmd: Command): DocKey[] {
 
     case 'playerDied': {
       const p = player(state, cmd.playerId);
-      p.hotbar = { main: null, off: null, armor: null, slots: p.hotbar.slots.map(() => null) };
       p.carrying = null;
       p.floor = cmd.respawn.floor;
       p.roomId = cmd.respawn.roomId;

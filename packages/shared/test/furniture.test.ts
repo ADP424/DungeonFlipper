@@ -8,7 +8,7 @@ beforeAll(() => registerAllContent());
 
 /** A bare def of a given footprint (optionally with a pivot), for turning tests. */
 const piece = (w: number, h: number, pivot?: { x: number; y: number }): FurnitureDef =>
-  ({ id: `t${w}x${h}`, name: 't', size: { w, h }, sprite: 'x', rotatable: true, blocksMovement: [], blocksProjectiles: [], pivot }) as FurnitureDef;
+  ({ id: `t${w}x${h}`, name: 't', size: { w, h }, sprite: 'x', blocksMovement: [], blocksProjectiles: [], pivot }) as FurnitureDef;
 
 /** The tiles a placement covers. */
 const cells = (def: FurnitureDef, p: { x: number; y: number; rot: number }) => {

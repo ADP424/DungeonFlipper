@@ -6,7 +6,6 @@ export default {
   name: 'Realtor Sign',
   size: { w: 1, h: 1 },
   sprite: 'furniture/realtor_flag',
-  rotatable: false,
   height: 1.4,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

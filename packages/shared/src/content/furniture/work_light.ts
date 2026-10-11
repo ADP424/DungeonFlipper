@@ -5,7 +5,6 @@ export default {
   name: 'Work Light',
   size: { w: 1, h: 1 },
   sprite: 'furniture/work_light',
-  rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],
   height: 1.2,

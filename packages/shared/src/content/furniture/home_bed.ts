@@ -6,7 +6,6 @@ export default {
   name: 'Your Bed',
   size: { w: 1, h: 2 },
   sprite: 'furniture/home_bed',
-  rotatable: true,
   height: 0.5,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

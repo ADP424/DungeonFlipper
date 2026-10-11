@@ -5,7 +5,6 @@ export default {
   name: 'Floor Lamp',
   size: { w: 1, h: 1 },
   sprite: 'furniture/floor_lamp',
-  rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],
   height: 1.4,

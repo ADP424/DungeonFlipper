@@ -10,7 +10,7 @@ import {
   getTenants, TIER_RENT, LANDLORD_START, LANDLORD_KEY, type Tenant, depthAt, templateWeight, spillCapacity, mirrorFacing, stairsDownRooms, regionKeyOf,
   type Command, type FloorState, type WorldState,
   utilityNets, fixtureSupplied, utilitiesTick, contactTiles, missingNeed, FAULT_CHANCE,
-  kitAccepts,
+  kitAccepts, cashText, deathCommands, rescueFee, rescueNote,
   getReputation, repTier, staffDay, staffCandidates, getStaff, tenantsDay as tenantsDayFn,
   TEMP_ALWAYS_APPLY,
   realtorsDay, realtorsTick, getRealtors, stanceOf, transferRoom, sellPrice, buyPrice, freeClearedRoom, realtorRooms, REALTORS_KEY,
@@ -262,15 +262,30 @@ describe('commands', () => {
     expect(w.rooms[roomId]!.wallSurfaces['3,3']).toBeUndefined();
   });
 
-  it('death wipes the hotbar but keeps cash', () => {
+  it('death keeps the hotbar and bills the call-out fee, the shortfall going onto the rent owed', () => {
     const w = emptyWorld();
     applyCommands(w, newWorldCommands('p1', 5));
-    applyCommands(w, [{ type: 'playerUpdated', playerId: 'p1', patch: { cash: 50 } }]);
-    applyCommands(w, [{ type: 'playerDied', playerId: 'p1', respawn: { floor: 1, roomId: 'f1r0', x: 9, y: 5 }, redHalves: 6 }]);
+    const death = { playerId: 'p1', floor: 2, respawn: { floor: 0, roomId: 'f0r0', x: 9, y: 5 }, redHalves: 6 };
+    const fee = rescueFee(2);
+    const crowbar = createItem('crowbar');
+    applyCommands(w, [{ type: 'playerUpdated', playerId: 'p1', patch: { cash: fee + 15, hotbar: { ...w.players.p1!.hotbar, main: crowbar } } }]);
+
+    const first = deathCommands(w, death);
+    applyCommands(w, first.commands);
     const p = w.players.p1!;
-    expect(p.cash).toBe(50);
-    expect(p.hotbar.main).toBeNull();
-    expect(p.hotbar.off).toBeNull();
+    expect(first.bill).toEqual({ fee, paid: fee, owed: 0 });
+    expect(p.cash).toBe(15);
+    expect(p.hotbar.main).toEqual(crowbar);
+    expect(p.floor).toBe(0);
+    expect(p.deaths).toBe(1);
+    expect(w.globals[LANDLORD_KEY]).toBeUndefined();
+
+    const second = deathCommands(w, death);
+    applyCommands(w, second.commands);
+    expect(second.bill).toEqual({ fee, paid: 15, owed: fee - 15 });
+    expect(p.cash).toBe(0);
+    expect((w.globals[LANDLORD_KEY] as { debt: number }).debt).toBe(fee - 15);
+    expect(rescueNote(second.bill)).toContain(cashText(fee - 15));
   });
 });
 

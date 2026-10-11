@@ -6,7 +6,6 @@ export default {
   name: 'Elevator',
   size: { w: 1, h: 1 },
   sprite: 'furniture/elevator',
-  rotatable: false,
   height: 1.6,
   blocksMovement: ['walk', 'fly'],
   blocksProjectiles: ['straight'],

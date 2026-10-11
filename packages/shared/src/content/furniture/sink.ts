@@ -5,7 +5,6 @@ export default {
   name: 'Sink',
   size: { w: 1, h: 1 },
   sprite: 'furniture/sink',
-  rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],
   height: 0.8,

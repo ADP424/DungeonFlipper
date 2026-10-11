@@ -70,16 +70,11 @@ function checkEnemyArt(): void {
   }
 }
 
-/** Every piece needs a south view; turnable ones should have north and side too (missing ones use south). */
+/** Every piece needs a south view; north and side are drawn case by case (a missing one uses south). */
 function checkFurnitureArt(): void {
-  const partial: string[] = [];
   for (const def of registry.furniture.all()) {
     if (!hasArt(`${def.sprite}/south`)) console.error(`[assets] furniture '${def.id}' has no art/${def.sprite}/south.png`);
-    if (!def.rotatable) continue;
-    const missing = ['north', 'side'].filter((v) => !hasArt(`${def.sprite}/${v}`));
-    if (missing.length) partial.push(`${def.id} (${missing.join(', ')})`);
   }
-  if (partial.length) console.warn(`[assets] turnable furniture using fallback views: ${partial.join('; ')}`);
 }
 
 /** Shelf-pack every image (tallest first) into one canvas, and index frames of animation folders. */

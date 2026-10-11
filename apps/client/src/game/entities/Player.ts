@@ -486,7 +486,7 @@ export class Player extends Actor {
     const g = this.game;
     const c = this.state.carrying!;
     const def = registry.furniture.get(c.defId);
-    if (wheel !== 0 && def.rotatable) {
+    if (wheel !== 0) {
       c.rot = (c.rot + (wheel > 0 ? 1 : 3)) % 4;
     }
     // Where it goes: over the tile in front of you but not on you, with its pivot as near that tile's

@@ -38,7 +38,7 @@ This roadmap records the design decisions made so far (D1–D60), what they mean
   - Furniture gets generic `fixed` and `use` fields (click behaviours), which the lobby elevator and utility sources will reuse.
 - **D7 Rent is paid automatically on the day tick** and reported in the morning digest. Haggling and complaints happen in person.
 - **D8 Unpaid apartment rent becomes debt with escalating pressure:** landlord notices, then a comedic repo event that takes some stash or furniture. It is never a game over, and early rent is cheap.
-- **D15 Death costs only the unstashed inventory**, as today. Property, tenants and gold remain.
+- **D15 Death costs the rest of the day and a call-out fee, never what you carry** (revised: it used to take the unstashed inventory, which was a chore more than a punishment). You come round at home the next morning with everything in your hotbar; the world ran without you meanwhile. The landlord bills you for hauling you out, more the deeper you fell, and what you can't pay goes onto the rent you owe (D8). Property, tenants and cash otherwise remain.
 - **D20 Reputation is one global number with tiers.** Tiers unlock wealthier tenant pools. Evictions, NPC deaths and neglected complaints lower it.
 
 ### World

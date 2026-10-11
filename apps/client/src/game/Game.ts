@@ -6,7 +6,7 @@ import {
   getInbox, registerAllResolvers, cellCenter, getRealtors, guardsFor, realtorOf, realtorRooms, stanceOf, inward, REP_REALTOR, RELATION, listingProblem, getStaff, householdSize, type StaffRole, UTILITY_KINDS, fixtureSupplied, utilityNets, type UtilityKind, type UtilityNets, stairsDownRooms, structuralWallTarget, findSign, getTenants, unitAt,
   type Barricade, isOwned, isOwnedBy, isSecure, itemDef, registry, rollLoot, tileKey, uid, wakeTime,
   type Command, type FurniturePlacement, type HealthLayer, type Hotbar, type ItemInstance, type LightDef,
-  type MonsterRecord, type PhoneMessage, type Tenant,
+  type MonsterRecord, type PhoneMessage, type Tenant, cashText, deathCommands, rescueNote, type RescueBill,
 } from '@df/shared';
 import { Input } from '../engine/input';
 import { Lighting, type LightInstance } from '../render/Lighting';
@@ -49,7 +49,9 @@ const BLOCKED_KNOCKBACK = 0.25;
 interface Fx { view: Container; life: number; update(dt: number): void }
 
 /** How the player fell asleep: in a bed, on the floor (phone), forced at midnight, or passed out at 2 AM. */
-type SleepKind = 'bed' | 'floor' | 'collapse' | 'passOut';
+type SleepKind = 'bed' | 'floor' | 'collapse' | 'passOut' | 'died';
+/** The ways a day ends in death: you come round at home with the landlord's bill. */
+const FATAL: ReadonlySet<SleepKind> = new Set(['passOut', 'died']);
 interface SleepState { kind: SleepKind; homeBed: boolean; t: number; applied: boolean }
 
 /**
@@ -304,7 +306,7 @@ export class Game {
 
     if (this.dying > 0) {
       this.dying -= dt;
-      if (this.dying <= 0) this.respawn();
+      if (this.dying <= 0) this.beginSleep('died');
       this.updateFx(dt);
       return;
     }
@@ -1313,10 +1315,10 @@ export class Game {
     const st = this.session.state;
     const from = getClock(st);
     const to = wakeTime(from);
-    if (s.kind === 'passOut') {
-      this.dropCarriedHere();
-      this.respawnAtHome();
-    }
+    const fatal = FATAL.has(s.kind);
+    const fell = this.session.player.floor;
+    const bill = fatal ? this.dieHome() : null;
+    const seen = new Set(getInbox(st, this.session.playerId).messages.map((m) => m.id));
     const before = this.barricadesSnapshot();
     advanceClock(st, from, to, (c) => this.dispatch(c), from.day);
     this.clockAcc = 0;
@@ -1324,24 +1326,38 @@ export class Game {
     // The night may have changed furniture here (deliveries, repossessions).
     this.furnitureChanged();
     const max = this.player.maxRedHalves();
-    const fullRest = s.homeBed || s.kind === 'passOut';
+    const fullRest = s.homeBed || fatal;
     const hp = fullRest ? max : Math.max(this.session.player.redHalves, Math.min(max, Math.floor(max * AWAY_SLEEP_HEAL_FRACTION)));
     this.dispatch({ type: 'slept', playerId: this.session.playerId, clock: to, redHalves: hp });
     const how: Record<SleepKind, string> = {
       bed: 'You slept in your own bed and feel fully rested.',
       floor: 'You slept on the floor. Only partly rested.',
       collapse: 'You collapsed from exhaustion at midnight. Only partly rested.',
-      passOut: 'You passed out in the Backrooms at 2 AM and woke up at home. Everything you carried is gone.',
+      passOut: 'You passed out in the Backrooms at 2 AM and came round at home.',
+      died: `You died on Level ${fell} and came round at home the next morning.`,
     };
-    this.notify(s.kind === 'passOut' ? 'urgent' : 'info', `Day ${to.day}. ${how[s.kind]}`, false);
-    this.ui.banner(`Day ${to.day}`, `${formatTime(to.minute, settings.clock24)}. ${how[s.kind]}`);
+    let text = how[s.kind];
+    if (bill) {
+      // What the lost day cost: the bill, and whatever went wrong while you were out.
+      const alerts = getInbox(st, this.session.playerId).messages.filter((m) => !seen.has(m.id) && m.severity !== 'info').length;
+      this.post({ severity: 'warn', from: 'Landlord', text: rescueNote(bill) });
+      text += ` The landlord charged ${cashText(bill.fee)} for hauling you out.`;
+      if (alerts) text += ` ${alerts} ${alerts === 1 ? 'alert' : 'alerts'} came in while you were out: check your phone.`;
+    }
+    this.notify(fatal ? 'urgent' : 'info', `Day ${to.day}. ${text}`, false);
+    this.ui.banner(`Day ${to.day}`, `${formatTime(to.minute, settings.clock24)}. ${text}`);
   }
 
   /** Post a phone message, optionally also as a toast. */
   notify(severity: PhoneMessage['severity'], text: string, toast = true): void {
-    const c = getClock(this.session.state);
-    this.dispatch({ type: 'messagePosted', playerId: this.session.playerId, message: { id: uid(), day: c.day, minute: c.minute, severity, text } });
+    this.post({ severity, text });
     if (toast) this.toast(text);
+  }
+
+  /** Post a phone message, stamped with the current time. */
+  private post(message: Pick<PhoneMessage, 'severity' | 'text' | 'from'>): void {
+    const c = getClock(this.session.state);
+    this.dispatch({ type: 'messagePosted', playerId: this.session.playerId, message: { id: uid(), day: c.day, minute: c.minute, ...message } });
   }
 
   // ───────────────────────────── combat ─────────────────────────────
@@ -1503,36 +1519,34 @@ export class Game {
     if (spot) this.dispatch({ type: 'furniturePlaced', roomId: this.room.roomIdAt(spot.x, spot.y) ?? this.room.currentId, placement: { ...p.carrying, x: spot.x, y: spot.y } });
   }
 
+  /** Killed: once the death has played out, the rest of the day is lost like any night (`applySleep`). */
   private killPlayer(): void {
-    this.dropCarriedHere();
     this.dying = 1.6;
     this.burst(this.player.x, this.player.y, 0xd8323c, 24);
     this.player.view.visible = false;
-    this.ui.banner('You died', 'Everything you carried is lost. Your cash and property remain.');
+    this.ui.banner('You died', 'You keep what you carried, but the rest of the day is gone.');
   }
 
-  private respawn(): void {
-    this.respawnAtHome();
-    this.player.iframes = 1.5;
-    this.player.view.visible = true;
-    this.checkCurfew();
-  }
-
-  /** Death: lose what you carried and reappear at home. No time passes. */
-  private respawnAtHome(): void {
+  /** Death: reappear at home with everything in your hotbar, billed by the landlord for the trouble. */
+  private dieHome(): RescueBill {
+    this.dropCarriedHere();
     const st = this.session.state;
-    const home = st.floors[APARTMENT_FLOOR]!;
-    const e = entryPoint(home);
-    this.dispatch({
-      type: 'playerDied',
-      playerId: this.session.playerId,
+    const p = this.session.player;
+    const e = entryPoint(st.floors[APARTMENT_FLOOR]!);
+    const { commands, bill } = deathCommands(st, {
+      playerId: p.id,
+      floor: p.floor,
       respawn: { floor: APARTMENT_FLOOR, roomId: e.roomId, x: e.x, y: e.y },
-      redHalves: this.session.player.baseRedMaxHalves,
+      redHalves: p.baseRedMaxHalves,
     });
+    for (const c of commands) this.dispatch(c);
     this.player.refreshStats();
     this.player.x = e.x;
     this.player.y = e.y;
+    this.player.iframes = 1.5;
+    this.player.view.visible = true;
     this.loadRoom(e.roomId, false);
+    return bill;
   }
 
   // ───────────────────────────── hotbar / furniture / renovation ─────────────────────────────

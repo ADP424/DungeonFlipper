@@ -5,7 +5,6 @@ export default {
   name: 'Storage Box',
   size: { w: 1, h: 1 },
   sprite: 'furniture/storage_box',
-  rotatable: false,
   height: 0.6,
   blocksMovement: ['walk'],
   blocksProjectiles: ['straight'],

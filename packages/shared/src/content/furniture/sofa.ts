@@ -5,7 +5,6 @@ export default {
   name: 'Sofa',
   size: { w: 2, h: 1 },
   sprite: 'furniture/sofa',
-  rotatable: true,
   height: 0.6,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

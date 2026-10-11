@@ -5,7 +5,6 @@ export default {
   name: 'Space Heater',
   size: { w: 1, h: 1 },
   sprite: 'furniture/space_heater',
-  rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],
   height: 0.9,

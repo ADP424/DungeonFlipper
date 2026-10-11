@@ -76,7 +76,7 @@ Lay down the systems every later phase builds on, while the game stays playable 
   - After any time step that reaches `minute ≥ 1440` (12 AM) while you're in a secure room, you fall asleep on the spot.
   - In an insecure room, a warning toast and a phone buzz go off at 12 AM and again at 1 AM.
   - Stepping into a secure room after midnight makes you sleep right away.
-- **Passing out:** reaching `minute ≥ 1560` (2 AM) in an insecure room means a fade to black and **death** (D15 rules: unstashed inventory lost). You wake at home 8 h later.
+- **Passing out:** reaching `minute ≥ 1560` (2 AM) in an insecure room means a fade to black and **death** (D15 rules: the day is lost and the landlord bills you). You wake at home 8 h later.
 - **Waking:**
   - **Wake time = the later of (sleep time + 8 h) and 6 AM the next day.** So going to bed before 10 PM still wakes you at 6 AM; 2 AM wakes you at 10 AM. `day` goes up by 1.
   - The hourly resolvers run over the **whole** slept span. That can be up to about 21 h when you sleep in the morning, which is the self-punishing cost of skipping time.

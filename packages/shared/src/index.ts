@@ -26,6 +26,7 @@ export * from './world/doors';
 export * from './world/area';
 export * from './world/units';
 export * from './world/tenants';
+export * from './world/death';
 export * from './world/store';
 export * from './world/utilities';
 export * from './world/reputation';

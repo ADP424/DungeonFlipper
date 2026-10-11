@@ -5,7 +5,6 @@ export default {
   name: 'Desk Lamp',
   size: { w: 1, h: 1 },
   sprite: 'furniture/desk_lamp',
-  rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],
   height: 1,

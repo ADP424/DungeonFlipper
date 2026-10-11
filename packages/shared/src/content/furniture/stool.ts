@@ -5,7 +5,6 @@ export default {
   name: 'Stool',
   size: { w: 1, h: 1 },
   sprite: 'furniture/stool',
-  rotatable: false,
   height: 0.4,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

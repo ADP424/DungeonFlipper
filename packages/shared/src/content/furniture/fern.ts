@@ -5,7 +5,6 @@ export default {
   name: 'Fern',
   size: { w: 1, h: 1 },
   sprite: 'furniture/fern',
-  rotatable: false,
   height: 0.8,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

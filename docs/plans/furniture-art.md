@@ -24,7 +24,6 @@ Furniture art can be any size and has depth. A tall lamp can be 16×24 pixels: i
 ```ts
 {
   size: { w: 1, h: 2 },          // footprint at facing 0, in tiles (as now)
-  rotatable: true,               // whether you can turn it (as now)
   collision?: Box[],             // px within the facing-0 footprint; default: the whole footprint
   pivot?: { x: number; y: number }, // tiles within the facing-0 footprint; default: see Pivots
   height: 0.5,                   // tiles, for shadows (as now)
@@ -43,9 +42,9 @@ type Box = { x: number; y: number; w: number; h: number }; // art pixels
 ### Art
 - **Layout:** `art/furniture/<id>/south.png`, `north.png` and `side.png`. Furniture mirrors east–west: `side.png` is drawn facing east, and facing west mirrors it. Each view is drawn for its facing's footprint: a 1×2 bed's `south.png` is about 16×32 and its `side.png` about 32×16.
 - **Placement:** the art stands on the footprint's bottom edge, centred horizontally, and extends upward (and sideways) as far as it's drawn.
-- **Fallbacks:** a missing `north` or `side` uses `south`. Only `south` is required, and a piece that can't turn only needs `south`.
+- **Fallbacks:** a missing `north` or `side` uses `south`. Only `south` is required; every piece can be turned, and gets the other views when it needs them.
 - **Animation:** a facing can be a folder of numbered frames (`fridge/south/0.png`…), like any animation.
-- **Warnings:** the console warns at startup about rotatable pieces that rely on fallbacks.
+- **Errors:** the console reports at startup any piece without a `south` view.
 
 ### Pivots
 - **What happens when a piece turns:** its footprint rotates a quarter turn around its pivot point, which stays put on the floor.
@@ -99,7 +98,7 @@ type Box = { x: number; y: number; w: number; h: number }; // art pixels
 8. **Silhouettes:** shadow silhouettes come from the facing's art.
 
 ## Migration
-- **Art:** each `art/furniture/<id>.png` becomes `art/furniture/<id>/south.png`, unchanged. For rotatable pieces, the other three facings start as placeholder copies made by rotating the current image, so nothing looks broken. You then redraw those as real views. The README's art section lists them.
+- **Art:** each `art/furniture/<id>.png` becomes `art/furniture/<id>/south.png`, unchanged. For pieces that could be turned, the other three facings start as placeholder copies made by rotating the current image, so nothing looks broken. You then redraw those as real views. The README's art section lists them.
 - **Defs:** existing defs need no new fields: default collision is the whole footprint, and default pivots are as above.
 - **Saves:** no schema change. Placements keep `x, y, rot`, with `rot` now meaning a facing.
 - **What you'd see:** current art fits its footprints, so nothing looks different except rotated pieces, which show their placeholder facings.
