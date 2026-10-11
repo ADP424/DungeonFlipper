@@ -1,16 +1,17 @@
 import { Container, Mesh, MeshGeometry, RenderTexture, Shader, Sprite, type Renderer } from 'pixi.js';
 import { TILE_PX, type LightDef } from '@df/shared';
 import { lightTex } from '../engine/assets';
-import { DEFAULT_LIGHT_HEIGHT, HEIGHT_SCALE, type ShadowBlob, type ShadowMaps } from './Shadows';
+import { DEFAULT_LIGHT_HEIGHT, HEIGHT_SCALE, MAX_ACTORS, type ShadowBlob, type ShadowMaps } from './Shadows';
 
-export interface LightInstance { x: number; y: number; def: LightDef; seed?: number }
+/** `self`: the light's own furniture (tiles, as drawn in the occluder map), which never shades it. */
+export interface LightInstance { x: number; y: number; def: LightDef; seed?: number; self?: { x: number; y: number; w: number; h: number } }
 
 /** How much of a shadow-casting light its shadows remove (the rest still spills in, softly). */
 const SHADOW_STRENGTH = 0.85;
-/** Occluders this close to a light (world px) are its own lamp or brazier, which never shade it. */
+/** Occluders this close to a light (world px) are its own lamp or brazier, which never shade it (furniture lights also skip their whole sprite, `self`). */
 const SELF_RADIUS = 0.75 * TILE_PX;
-/** Actors the shader lifts off the floor (their sprites stand on top of their own shadow). */
-const MAX_ACTORS = 16;
+/** Texels a shadow ray may cross: enough for the widest light's reach along a diagonal. */
+const MAX_STEPS = 320;
 
 /** A growable pool of additive glow sprites inside one container. */
 class GlowPool {
@@ -76,16 +77,21 @@ uniform sampler2D uSurface;
 uniform sampler2D uOccluders;
 uniform vec4 uLight;   // world px x, y; height (tiles); shadow strength
 uniform vec4 uColor;   // rgb, intensity
-uniform vec4 uQuad;    // world px of the quad's corner; size px; actor count
+uniform vec4 uQuad;    // world px of the quad's corner; size px
 uniform vec4 uArea;    // world px rectangle the maps cover
-uniform vec4 uActors[${MAX_ACTORS}]; // world px x, y, radius px, height (tiles)
+uniform vec4 uSelf;    // world px x0, y0, x1, y1 of the light's own furniture, which casts no shadow from it
+uniform vec2 uActors[${MAX_ACTORS}]; // world px of where each actor stands
 
 const float HS = ${HEIGHT_SCALE.toFixed(1)};
 
-float occluderAt(vec2 w) {
+// What blocks light at a world position: its height (tiles), and whose pixel it is (an actor's
+// index in uActors + 1; anything else is no actor's).
+vec2 occluderAt(vec2 w) {
   vec2 uv = (w - uArea.xy) / uArea.zw;
-  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 0.0;
-  return texture(uOccluders, uv).r * HS;
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return vec2(0.0);
+  if (w.x >= uSelf.x && w.y >= uSelf.y && w.x < uSelf.z && w.y < uSelf.w) return vec2(0.0);
+  vec4 o = texture(uOccluders, uv);
+  return vec2(o.r * HS, floor(o.g * 255.0 + 0.5));
 }
 
 void main() {
@@ -95,13 +101,22 @@ void main() {
   vec2 suv = (w - uArea.xy) / uArea.zw;
   vec4 s = (suv.x < 0.0 || suv.y < 0.0 || suv.x > 1.0 || suv.y > 1.0) ? vec4(0.0, 0.5, 0.5, 1.0) : texture(uSurface, suv);
   float z = s.r * HS;
-  vec2 p = w + (s.gb - 0.5) * 32.0;
-  for (int i = 0; i < ${MAX_ACTORS}; i++) {
-    if (float(i) >= uQuad.w) break;
-    vec4 ac = uActors[i];
-    vec2 d = w - ac.xy;
-    // An actor's sprite rises about a tile above its feet: those pixels stand on top of it.
-    if (abs(d.x) < ac.z && d.y < ac.z && d.y > -${TILE_PX.toFixed(1)}) z = max(z, ac.w);
+  vec2 off = (s.gb - 0.5) * 32.0;
+  // Faces stand half a pixel out from the wall's edge: the stored offset is rounded, and a point that
+  // lands inside the wall would be shaded by the wall itself along rays that graze it.
+  float offLen = length(off);
+  vec2 p = w + (offLen > 0.01 ? off * (1.0 + 0.5 / offLen) : off);
+  // An actor's sprite stands upright where the actor is: it is lit as that spot on the floor is, and
+  // its own silhouette never shades it. Actors are drawn on whole art pixels (artPixel), so the
+  // silhouette in this map is exactly the sprite on screen: every pixel of it is the actor, and the
+  // floor's shadow starts at its edge.
+  float actor = occluderAt(w).y;
+  if (actor >= 1.0 && actor <= ${MAX_ACTORS.toFixed(1)}) {
+    // (A loop, because this GLSL only indexes arrays by loop counters.)
+    for (int i = 0; i < ${MAX_ACTORS}; i++) if (i == int(actor) - 1) p = uActors[i];
+    z = 0.0;
+  } else {
+    actor = -1.0;
   }
   vec2 toLight = uLight.xy - p;
   float dist = length(toLight);
@@ -109,14 +124,22 @@ void main() {
   if (dist > 1.0) {
     vec2 u = toLight / dist;
     float reach = dist - ${SELF_RADIUS.toFixed(1)};
-    float steps = clamp(ceil(reach / 2.0), 0.0, 128.0);
-    float stepLen = reach / max(steps, 1.0);
     // Rays from points above the light run level: wall tops are lit like floors, shaded by taller things.
     float climb = max(0.0, uLight.z - z);
-    for (int i = 0; i < 128; i++) {
-      if (float(i) >= steps) break;
-      float t = (float(i) + 0.5) * stepLen;
-      float over = occluderAt(p + u * t) - (z + climb * t / dist);
+    // Walk the ray through the occluder map one texel at a time (a texel is a world pixel), testing
+    // every texel it crosses after the one it starts in: stepping by distance instead skips thin
+    // shapes and corners, which shows as holes and ragged edges in shadows. "next" is how far along
+    // the ray the next texel boundary is on each axis, "span" how far apart those boundaries are.
+    vec2 dir = vec2(u.x < 0.0 ? -1.0 : 1.0, u.y < 0.0 ? -1.0 : 1.0);
+    vec2 span = 1.0 / max(abs(u), vec2(0.00001));
+    vec2 cell = floor(p);
+    vec2 next = (dir * (cell - p) + max(dir, 0.0)) * span;
+    for (int i = 0; i < ${MAX_STEPS}; i++) {
+      float t = min(next.x, next.y);
+      if (t >= reach) break;
+      if (next.x < next.y) { cell.x += dir.x; next.x += span.x; } else { cell.y += dir.y; next.y += span.y; }
+      vec2 o = occluderAt(cell + 0.5);
+      float over = (o.y == actor ? 0.0 : o.x) - (z + climb * t / dist);
       lit = min(lit, 1.0 - smoothstep(0.02, 0.15, over));
       if (lit <= 0.0) break;
     }
@@ -129,13 +152,13 @@ void main() {
 class ShadowLight {
   readonly mesh: Mesh<MeshGeometry, Shader>;
   readonly u: {
-    uLight: Float32Array; uColor: Float32Array; uQuad: Float32Array; uArea: Float32Array; uActors: Float32Array;
+    uLight: Float32Array; uColor: Float32Array; uQuad: Float32Array; uArea: Float32Array; uSelf: Float32Array; uActors: Float32Array;
   };
 
   constructor(maps: ShadowMaps) {
     this.u = {
       uLight: new Float32Array(4), uColor: new Float32Array(4), uQuad: new Float32Array(4),
-      uArea: new Float32Array(4), uActors: new Float32Array(MAX_ACTORS * 4),
+      uArea: new Float32Array(4), uSelf: new Float32Array(4), uActors: new Float32Array(MAX_ACTORS * 2),
     };
     const shader = Shader.from({
       gl: { vertex: VERTEX, fragment: FRAGMENT, name: 'shadow-light' },
@@ -148,7 +171,8 @@ class ShadowLight {
           uColor: { value: this.u.uColor, type: 'vec4<f32>' },
           uQuad: { value: this.u.uQuad, type: 'vec4<f32>' },
           uArea: { value: this.u.uArea, type: 'vec4<f32>' },
-          uActors: { value: this.u.uActors, type: 'vec4<f32>', size: MAX_ACTORS },
+          uSelf: { value: this.u.uSelf, type: 'vec4<f32>' },
+          uActors: { value: this.u.uActors, type: 'vec2<f32>', size: MAX_ACTORS },
         },
       },
     });
@@ -184,7 +208,7 @@ export class Lighting {
   private time = 0;
 
   constructor(w: number, h: number) {
-    this.rt = RenderTexture.create({ width: Math.max(1, Math.ceil(w)), height: Math.max(1, Math.ceil(h)) });
+    this.rt = RenderTexture.create({ width: Math.max(1, Math.ceil(w)), height: Math.max(1, Math.ceil(h)), scaleMode: 'nearest' });
     this.overlay = new Sprite(this.rt);
     this.overlay.blendMode = 'multiply';
   }
@@ -194,7 +218,7 @@ export class Lighting {
     const width = Math.max(1, Math.ceil(w)), height = Math.max(1, Math.ceil(h));
     if (width === this.rt.width && height === this.rt.height) return;
     const old = this.rt;
-    this.rt = RenderTexture.create({ width, height });
+    this.rt = RenderTexture.create({ width, height, scaleMode: 'nearest' });
     this.overlay.texture = this.rt;
     old.destroy(true);
   }
@@ -207,8 +231,8 @@ export class Lighting {
     const t = this.time;
     const shadows = !!maps?.surface && lights.some((l) => l.def.shadows);
     if (shadows) maps!.renderOccluders(renderer, blobs);
-    const actors = new Float32Array(MAX_ACTORS * 4);
-    blobs.slice(0, MAX_ACTORS).forEach((b, i) => actors.set([b.x * TILE_PX, b.y * TILE_PX, b.r * TILE_PX, b.h], i * 4));
+    const actors = new Float32Array(MAX_ACTORS * 2);
+    blobs.slice(0, MAX_ACTORS).forEach((b, i) => actors.set([b.x * TILE_PX, b.y * TILE_PX], i * 2));
     this.glows.begin();
     let n = 0;
     lights.forEach((l, i) => {
@@ -232,7 +256,9 @@ export class Lighting {
       s.u.uLight.set([lx, ly, (l.def.height ?? DEFAULT_LIGHT_HEIGHT) * (0.94 + 0.06 * flick), SHADOW_STRENGTH]);
       const c = l.def.color;
       s.u.uColor.set([((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255, alpha]);
-      s.u.uQuad.set([x0, y0, d, Math.min(blobs.length, MAX_ACTORS)]);
+      s.u.uQuad.set([x0, y0, d, 0]);
+      const own = l.self;
+      s.u.uSelf.set(own ? [own.x * TILE_PX, own.y * TILE_PX, (own.x + own.w) * TILE_PX, (own.y + own.h) * TILE_PX] : [0, 0, 0, 0]);
       s.u.uActors.set(actors);
       s.mesh.visible = true;
       s.mesh.position.set(x0 - camX, y0 - camY);

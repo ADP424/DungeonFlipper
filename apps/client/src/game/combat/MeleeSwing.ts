@@ -1,9 +1,9 @@
 import { Container, Graphics, Sprite } from 'pixi.js';
 import { TILE_PX, angleDiff, type MeleeAttackDef } from '@df/shared';
 import { tex } from '../../engine/assets';
-import type { Actor } from '../entities/Entity';
+import type { Entity } from '../entities/Entity';
 
-export interface SwingHit { target: Actor; dirX: number; dirY: number }
+export interface SwingHit { target: Entity; dirX: number; dirY: number }
 
 /**
  * A melee attack in progress. Patterns:
@@ -44,7 +44,7 @@ export class MeleeSwing {
     return Math.max(0, Math.min(1, (this.t - this.attack.windup) / this.attack.duration));
   }
 
-  update(dt: number, ox: number, oy: number, ownerRadius: number, targets: Actor[], onHit: (h: SwingHit) => void): void {
+  update(dt: number, ox: number, oy: number, ownerRadius: number, targets: Entity[], onHit: (h: SwingHit) => void): void {
     this.t += dt;
     const a = this.attack;
     const reach = ownerRadius + this.range;
@@ -67,7 +67,7 @@ export class MeleeSwing {
 
   private smashed = false;
 
-  private hits(tgt: Actor, ox: number, oy: number, ownerR: number, reach: number, dirX: number, dirY: number): boolean {
+  private hits(tgt: Entity, ox: number, oy: number, ownerR: number, reach: number, dirX: number, dirY: number): boolean {
     const a = this.attack;
     const vx = tgt.x - ox, vy = tgt.y - oy;
     const d = Math.hypot(vx, vy);
@@ -120,7 +120,6 @@ export class MeleeSwing {
         }
         this.weapon.position.set(cx + Math.cos(cur) * ownerR * P, cy + Math.sin(cur) * ownerR * P);
         this.weapon.rotation = cur + Math.PI / 2;
-        this.weapon.scale.set(Math.max(0.8, (reach - ownerR) / 1.0));
         break;
       }
       case 'stab': {

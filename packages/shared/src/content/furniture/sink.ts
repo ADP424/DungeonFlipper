@@ -4,7 +4,7 @@ export default {
   id: 'sink',
   name: 'Sink',
   size: { w: 1, h: 1 },
-  sprite: 'proc:sink',
+  sprite: 'furniture/sink',
   rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

@@ -5,7 +5,7 @@ export default {
   kind: 'tool',
   name: 'Plywood',
   description: 'Patch over missing floor. Each hole costs 1.',
-  icon: 'proc:planks',
+  icon: 'items/tools/plywood',
   action: { id: 'fill', params: { surface: 'plywood_patch' } },
   uses: 12,
   price: 8,

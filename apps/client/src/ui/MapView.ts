@@ -1,5 +1,6 @@
+import { TIP_BAR_W, barWidth } from './pixels';
 import {
-  BARRICADE_TIERS, CELL_H, CELL_W, SIGN, barricadeKit, cellKey, findSign, getClock, getTenants, isSecure, openings, partnerDoor, registry,
+  BARRICADE_TIERS, CELL_H, CELL_W, SIGN, STANCE_NAME, getRealtors, stanceOf, barricadeKit, cellKey, findSign, getClock, getTenants, isSecure, openings, partnerDoor, registry,
   roomLabel, securityNeeds,
   type Barricade, type DoorInfo, type FloorState, type RoomInfo, type WorldState,
 } from '@df/shared';
@@ -12,6 +13,11 @@ export interface MapViewport {
   cy: number;
   /** Pixels per cell. */
   cellPx: number;
+  /**
+   * Draw on whole pixels (the minimap, drawn at art-pixel resolution): cells, doors and lines snap
+   * to the pixel grid, and the text icons and faces, too small to read, are left out.
+   */
+  pixel?: boolean;
 }
 
 /**
@@ -65,7 +71,8 @@ export function drawFloorMap(
     // Owned: gold when secure, amber when not, red with monsters inside. Unowned rooms darken toward red
     // the harder they are (difficulty is fixed at generation).
     const danger = Math.min(1, info.difficulty / 10);
-    const owned = st?.ownerId
+    const rival = st?.ownerId && st.ownerId !== world.ownerId ? getRealtors(world)[st.ownerId] : undefined;
+    const owned = rival ? '#7a52a8' : st?.ownerId
       ? st.monsters.length ? '#b84a3a'
         : rented.has(unitKey(info.id)) ? '#4f7fc4'
         : forRent.has(unitKey(info.id)) ? '#4f9a5c'
@@ -85,7 +92,8 @@ export function drawFloorMap(
       // Extend into neighbouring cells of the same room so merged rooms read as one shape.
       const right = cells.has(cellKey(c.cx + 1, c.cy)) ? gap : 0;
       const down = cells.has(cellKey(c.cx, c.cy + 1)) ? gap : 0;
-      ctx.fillRect(x + gap / 2, y + gap / 2, s - gap + right, cellH - gap + down);
+      if (vp.pixel) ctx.fillRect(x, y, s - gap + right, cellH - gap + down);
+      else ctx.fillRect(x + gap / 2, y + gap / 2, s - gap + right, cellH - gap + down);
     }
     if (st?.visited || current) {
       // Doors bridge the gap between neighbouring rooms; barricaded ones are drawn thicker, coloured by wear.
@@ -94,7 +102,7 @@ export function drawFloorMap(
         const r = doorRect(d, w, h, vp, !!b);
         ctx.fillStyle = b ? wearColor(b) : '#d8ccb4';
         ctx.fillRect(r.x, r.y, r.w, r.h);
-        if (b) {
+        if (b && !vp.pixel) {
           ctx.strokeStyle = '#1a1410';
           ctx.lineWidth = 1;
           ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
@@ -102,9 +110,9 @@ export function drawFloorMap(
       }
     }
     // Icons
-    const icon = info.tags.includes('boss') ? '☠' : info.tags.includes('stairsDown') ? '▼' : info.tags.includes('safe') ? '⌂' : info.tags.includes('lobby') ? '▲'
-      : signRooms.has(info.id) && !faces.some((f) => f.roomId === info.id) ? '$' : '';
-    if (icon && (st?.discovered || current)) {
+    const icon = rival && rival.officeRoomId === info.id ? '◆' : info.tags.includes('boss') ? '☠' : info.tags.includes('stairsDown') ? '▼' : info.tags.includes('safe') ? '⌂' : info.tags.includes('lobby') ? '▲'
+      : signRooms.has(info.id) && !faces.some((f) => f.roomId === info.id) ? '¤' : '';
+    if (icon && !vp.pixel && (st?.discovered || current)) {
       const c0 = info.cells.reduce((a, c) => ({ cx: a.cx + c.cx / info.cells.length, cy: a.cy + c.cy / info.cells.length }), { cx: 0, cy: 0 });
       ctx.fillStyle = lit ? '#2a2420' : '#f2ead8';
       ctx.font = `${Math.max(8, Math.floor(Math.min(s, cellH) * 0.55))}px serif`;
@@ -115,7 +123,7 @@ export function drawFloorMap(
   }
   // Thick borders around owned spaces (rooms merged through openings outline as one).
   ctx.strokeStyle = '#f0d890';
-  ctx.lineWidth = Math.max(1.5, s * 0.05);
+  ctx.lineWidth = vp.pixel ? 1 : Math.max(1.5, s * 0.05);
   ctx.beginPath();
   const drawn = new Set<string>();
   for (const [id, g] of group) {
@@ -123,7 +131,9 @@ export function drawFloorMap(
     drawn.add(g.key);
     for (const k of g.cells) {
       const [cx, cy] = k.split(',').map(Number) as [number, number];
-      const x0 = toX(cx) + gap / 2, y0 = toY(cy) + gap / 2, x1 = toX(cx + 1) - gap / 2, y1 = toY(cy + 1) - gap / 2;
+      // On whole pixels the cell's fill runs from its corner to the gap; the line is drawn on its edge pixels.
+      const x0 = vp.pixel ? toX(cx) + 0.5 : toX(cx) + gap / 2, y0 = vp.pixel ? toY(cy) + 0.5 : toY(cy) + gap / 2;
+      const x1 = vp.pixel ? toX(cx + 1) - gap - 0.5 : toX(cx + 1) - gap / 2, y1 = vp.pixel ? toY(cy + 1) - gap - 0.5 : toY(cy + 1) - gap / 2;
       if (!g.cells.has(cellKey(cx, cy - 1))) { ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); }
       if (!g.cells.has(cellKey(cx, cy + 1))) { ctx.moveTo(x0, y1); ctx.lineTo(x1, y1); }
       if (!g.cells.has(cellKey(cx - 1, cy))) { ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); }
@@ -135,14 +145,18 @@ export function drawFloorMap(
   const byRoom = new Map<string, string[]>();
   for (const f of faces) byRoom.set(f.roomId, [...(byRoom.get(f.roomId) ?? []), f.look]);
   ctx.imageSmoothingEnabled = false;
-  for (const [roomId, looks] of byRoom) {
+  // Faces are drawn at whole device pixels per art pixel, on the device pixel grid (the context is
+  // scaled by the pixel ratio).
+  const dpr = ctx.getTransform().a;
+  const snap = (v: number) => Math.round(v * dpr) / dpr;
+  for (const [roomId, looks] of vp.pixel ? [] : byRoom) {
     const info = floor.rooms[roomId];
     if (!info || !(rooms[roomId]?.discovered || roomId === currentRoomId)) continue;
     const c0 = info.cells.reduce((a, c) => ({ cx: a.cx + c.cx / info.cells.length, cy: a.cy + c.cy / info.cells.length }), { cx: 0, cy: 0 });
-    const size = Math.max(10, Math.floor(Math.min(s, cellH) * 0.62));
+    const size = (16 * Math.max(1, Math.floor((Math.min(s, cellH) * 0.62 * dpr) / 16))) / dpr;
     const total = looks.length * size + (looks.length - 1) * 2;
     looks.forEach((look, i) => {
-      const x = toX(c0.cx + 0.5) - total / 2 + i * (size + 2), y = toY(c0.cy + 0.5) - size / 2;
+      const x = snap(toX(c0.cx + 0.5) - total / 2 + i * (size + 2)), y = snap(toY(c0.cy + 0.5) - size / 2);
       ctx.fillStyle = 'rgba(20, 24, 40, 0.55)';
       ctx.beginPath();
       ctx.arc(x + size / 2, y + size / 2, size / 2 + 1, 0, Math.PI * 2);
@@ -153,6 +167,10 @@ export function drawFloorMap(
   // Player
   const px = toX(player.x / CELL_W), py = toY(player.y / CELL_H);
   ctx.fillStyle = '#e0303c';
+  if (vp.pixel) {
+    ctx.fillRect(Math.round(px) - 1, Math.round(py) - 1, 2, 2);
+    return;
+  }
   ctx.beginPath();
   ctx.arc(px, py, Math.max(2, s * 0.09), 0, Math.PI * 2);
   ctx.fill();
@@ -160,12 +178,16 @@ export function drawFloorMap(
 
 /** Map layout: pixels per cell (cells drawn a little squarer than their true 19:11, which reads better). */
 function geometry(w: number, h: number, vp: MapViewport) {
-  const s = vp.cellPx;
-  const cellH = s * (CELL_H / CELL_W) * 1.25;
-  const ox = w / 2 - vp.cx * s, oy = h / 2 - vp.cy * cellH;
+  const s = vp.pixel ? Math.max(3, Math.floor(vp.cellPx)) : vp.cellPx;
+  const cellH = vp.pixel ? Math.max(2, Math.round(s * (CELL_H / CELL_W) * 1.25)) : s * (CELL_H / CELL_W) * 1.25;
+  let ox = w / 2 - vp.cx * s, oy = h / 2 - vp.cy * cellH;
+  if (vp.pixel) {
+    ox = Math.round(ox);
+    oy = Math.round(oy);
+  }
   return {
     s, cellH,
-    gap: Math.max(1, s * 0.08),
+    gap: vp.pixel ? 1 : Math.max(1, s * 0.08),
     toX: (cx: number) => ox + cx * s,
     toY: (cy: number) => oy + cy * cellH,
     fromX: (px: number) => (px - ox) / s,
@@ -176,6 +198,17 @@ function geometry(w: number, h: number, vp: MapViewport) {
 /** Where a door is drawn: a bridge across the gap between two rooms (wider when barricaded). */
 function doorRect(d: DoorInfo, w: number, h: number, vp: MapViewport, barricaded: boolean): { x: number; y: number; w: number; h: number } {
   const { s, gap, toX, toY } = geometry(w, h, vp);
+  if (vp.pixel) {
+    // A door is a 2-pixel bridge over the 1-pixel gap (3 thick when barricaded), on whole pixels.
+    const dw = 2, th = barricaded ? 3 : 1;
+    const fx = (d.x + 0.5) / CELL_W, fy = (d.y + 0.5) / CELL_H;
+    if (d.dir === 'e' || d.dir === 'w') {
+      const ex = Math.floor(d.x / CELL_W) + (d.dir === 'e' ? 1 : 0);
+      return { x: toX(ex) - 1 - (th >> 1), y: Math.round(toY(fy) - dw / 2), w: th, h: dw };
+    }
+    const ey = Math.floor(d.y / CELL_H) + (d.dir === 's' ? 1 : 0);
+    return { x: Math.round(toX(fx) - dw / 2), y: toY(ey) - 1 - (th >> 1), w: dw, h: th };
+  }
   const dw = Math.max(2, s * (barricaded ? 0.32 : 0.2));
   const th = barricaded ? gap + Math.max(3, s * 0.08) : gap + 2;
   const fx = (d.x + 0.5) / CELL_W, fy = (d.y + 0.5) / CELL_H;
@@ -234,7 +267,10 @@ export function describeMapRoom(world: WorldState, info: RoomInfo, playerId: str
       const lastDay = st.insecureSince + 1;
       lines.push(`<span class="bad">Lost at the end of ${lastDay === getClock(world).day ? 'today' : `day ${lastDay}`} unless secured.</span>`);
     }
-  } else if (st.ownerId) lines.push('Someone else\'s property.');
+  } else if (st.ownerId) {
+    const r = getRealtors(world)[st.ownerId];
+    lines.push(r ? `${r.name}'s ${r.officeRoomId === info.id ? 'office' : 'property'} · ${STANCE_NAME[stanceOf(r)].toLowerCase()}` : 'Someone else\'s property.');
+  }
   else if (!st.visited) lines.push('Unexplored.');
   else if (st.monsters.length) lines.push(`Monsters inside (${st.monsters.length}).`);
   else lines.push('Cleared · unclaimed. Plant a company flag to claim it.');
@@ -252,7 +288,7 @@ export function describeMapBarricade(world: WorldState, hit: Extract<MapHit, { k
   const other = partnerDoor(world, hit.room.id, `${hit.door.x},${hit.door.y}`);
   const between = other ? ` between ${roomLabel(hit.room)} and ${roomLabel(world.floors[world.rooms[other.roomId]!.floor]!.rooms[other.roomId]!)}` : '';
   return `<b>${name}</b> (tier ${b.tier})<br>${Math.ceil(b.hp)} / ${max} HP${between ? `<br><i>${between.trim()}</i>` : ''}`
-    + `<div class="tip-bar"><div style="width:${Math.round(k * 100)}%;background:${wearColor(b)}"></div></div>`;
+    + `<div class="tip-bar"><div style="width:${barWidth(k, TIP_BAR_W)};background:${wearColor(b)}"></div></div>`;
 }
 
 /**

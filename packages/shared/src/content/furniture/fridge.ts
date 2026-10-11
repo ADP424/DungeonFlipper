@@ -4,7 +4,7 @@ export default {
   id: 'fridge',
   name: 'Fridge',
   size: { w: 1, h: 1 },
-  sprite: 'proc:fridge',
+  sprite: 'furniture/fridge',
   rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: ['straight'],

@@ -6,6 +6,13 @@ export type Team = 'player' | 'enemy' | 'neutral';
 
 let nextId = 1;
 
+/**
+ * Where something at a tile position is drawn: on a whole art pixel. Things move by fractions of a
+ * pixel but are drawn on the art's grid, the one the light and shadow maps are on, so the light on a
+ * sprite and the shadow it casts line up with it exactly.
+ */
+export const artPixel = (tiles: number) => Math.round(tiles * TILE_PX);
+
 /** Base for everything that lives in a room at runtime. Positions are tile units (floats). */
 export abstract class Entity {
   readonly id = nextId++;
@@ -24,7 +31,7 @@ export abstract class Entity {
 
   /** Sync the view to the simulation state. */
   syncView(): void {
-    this.view.position.set(this.x * TILE_PX, this.y * TILE_PX);
+    this.view.position.set(artPixel(this.x), artPixel(this.y));
     this.view.zIndex = this.y;
   }
 }
@@ -34,22 +41,25 @@ export abstract class Actor extends Entity {
   readonly sprite: Sprite;
   readonly shadow: Sprite;
   /** The sprite's texture key (its silhouette casts the shadow). */
-  readonly spriteKey: string;
+  spriteKey: string;
   flash = 0;
   /** Knockback velocity, decays every frame. */
   kx = 0;
   ky = 0;
 
-  constructor(spriteKey: string, scale = 1, tint?: number) {
+  /**
+   * Sprites are never scaled (every art pixel is the same size on screen): a bigger actor has bigger
+   * art, and gets the large shadow.
+   */
+  constructor(spriteKey: string, tint?: number) {
     super();
-    this.shadow = new Sprite(tex('proc:shadow'));
-    this.shadow.anchor.set(0.5, 0.5);
-    this.shadow.scale.set(scale);
-    this.shadow.y = 6 * scale;
     this.spriteKey = spriteKey;
     this.sprite = new Sprite(tex(spriteKey));
     this.sprite.anchor.set(0.5, 0.75);
-    this.sprite.scale.set(scale);
+    const h = this.sprite.texture.height;
+    this.shadow = new Sprite(tex(this.sprite.texture.width > 16 ? 'fx/shadow_large' : 'fx/shadow'));
+    this.shadow.anchor.set(0.5, 0.5);
+    this.shadow.y = Math.round(h * 0.375);
     this.baseTint = tint ?? 0xffffff;
     this.sprite.tint = this.baseTint;
     this.view.addChild(this.shadow, this.sprite);
@@ -57,9 +67,16 @@ export abstract class Actor extends Entity {
 
   protected baseTint: number;
 
+  /** Show another sprite (an animation frame, a pose); its silhouette then casts the shadow. */
+  setSprite(key: string): void {
+    if (key === this.spriteKey) return;
+    this.spriteKey = key;
+    this.sprite.texture = tex(key);
+  }
+
   override syncView(): void {
     super.syncView();
-    this.sprite.y = -this.z * TILE_PX + this.sprite.scale.y * 4;
+    this.sprite.y = -artPixel(this.z) + this.sprite.texture.height / 4;
     this.sprite.tint = this.flash > 0 ? 0xff6060 : this.baseTint;
     this.sprite.alpha = 1;
   }

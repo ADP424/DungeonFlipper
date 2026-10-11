@@ -3,7 +3,7 @@ import type { ObstacleDef } from '../types';
 export default {
   id: 'timber_wall_short',
   name: 'Low Timber Partition',
-  sprite: 'proc:short_wall:wood',
+  sprite: 'obstacles/timber_wall_short',
   blocksMovement: ['walk'],
   blocksProjectiles: ['straight'],
   height: 'short',
@@ -11,5 +11,5 @@ export default {
   material: 'wood',
   renovate: ['demolish'],
   connectGroup: 'wall',
-  autotile: { set: 'wood_short', joins: ['wall'] },
+  autotile: { set: 'timber_wall_short', joins: ['wall'] },
 } satisfies ObstacleDef;

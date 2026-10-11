@@ -3,7 +3,7 @@ import type { ObstacleDef } from '../types';
 export default {
   id: 'drywall',
   name: 'Drywall',
-  sprite: 'proc:tall_wall:plaster',
+  sprite: 'obstacles/drywall',
   blocksMovement: ['walk', 'fly'],
   blocksProjectiles: ['straight', 'lobbed'],
   height: 'tall',
@@ -11,5 +11,5 @@ export default {
   material: 'plaster',
   renovate: ['demolish'],
   connectGroup: 'wall',
-  autotile: { set: 'plaster', joins: ['wall'] },
+  autotile: { set: 'drywall', joins: ['wall'] },
 } satisfies ObstacleDef;

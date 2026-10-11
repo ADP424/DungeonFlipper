@@ -1,13 +1,11 @@
 import { CELL_H, CELL_W } from '../core/constants';
 import { Rng, deriveSeed } from '../core/rng';
-import { tileKey } from '../core/geometry';
-import { enemies as enemyReg, furniture as furnitureReg, roomTemplates } from '../content/registry';
-import { legendFor, templateMapSize } from '../content';
-import type { CellCoord, EnemyDef, RoomTag, RoomTemplateDef } from '../content/types';
-import {
-  APARTMENT_FLOOR, BOSS_CHANCE, FURNITURE_SLOT_CHANCE, LOBBY_CELL, furnitureTarget, roomDifficulty, threatBudget, threatCap,
-} from './difficulty';
+import { furniture as furnitureReg, roomTemplates } from '../content/registry';
+import { legendFor } from '../content';
+import type { CellCoord, RoomTag, RoomTemplateDef } from '../content/types';
+import { APARTMENT_FLOOR, BOSS_CHANCE, LOBBY_CELL, depthAt, templateWeight } from './difficulty';
 import { RoomLayout, cellKey, footprint, mirrorCells, templateToGlobal } from './layout';
+import { mirrorFacing } from './furniture';
 import { createItem } from './items';
 import { WORLD_OWNER } from './ownership';
 import type { Dir, FloorState, MonsterRecord, RoomInfo, RoomState } from './types';
@@ -74,7 +72,7 @@ export class FloorBuilder {
     const id = this.nextRoomId();
     const info: RoomInfo = {
       id, floor: this.floorIndex, templateId: t.id, mirrorX, mirrorY, cells, doors: [], tags: [...t.tags],
-      difficulty: roomDifficulty(this.floorIndex, cells), expanded: false,
+      difficulty: t.difficulty ?? 0, expanded: false,
     };
     for (const c of cells) this.cells.set(cellKey(c.cx, c.cy), id);
     this.rooms.set(id, info);
@@ -135,8 +133,21 @@ export class FloorBuilder {
     return null;
   }
 
-  templatesWithTag(tag: RoomTag, difficulty = Infinity): RoomTemplateDef[] {
-    return roomTemplates.all().filter((t) => t.tags.includes(tag) && (t.minDifficulty ?? 0) <= difficulty);
+  /** Templates with a tag that may appear at a depth (those no harder than it). */
+  templatesWithTag(tag: RoomTag, depth = Infinity): RoomTemplateDef[] {
+    return roomTemplates.all().filter((t) => t.tags.includes(tag) && (t.difficulty ?? 0) <= depth);
+  }
+
+  /**
+   * A template for a spot at `depth`, by `templateWeight`. Somewhere shallower than every template
+   * with the tag gets the easiest ones.
+   */
+  pickTemplate(tag: RoomTag, depth: number): RoomTemplateDef | undefined {
+    const fits = this.templatesWithTag(tag, depth);
+    if (fits.length) return this.rng.weighted(fits, (t) => templateWeight(t, depth));
+    const all = this.templatesWithTag(tag);
+    const easiest = Math.min(...all.map((t) => t.difficulty ?? 0));
+    return this.rng.weighted(all.filter((t) => (t.difficulty ?? 0) === easiest), (t) => t.weight ?? 1);
   }
 
   /** Free cell edges of a room, in random order. */
@@ -152,18 +163,18 @@ export class FloorBuilder {
   private attachNew(cell: CellCoord, d: (typeof DIRS)[number]): RoomInfo | null {
     const nc = { cx: cell.cx + d.dx, cy: cell.cy + d.dy };
     if (this.cells.has(cellKey(nc.cx, nc.cy))) return null;
-    const difficulty = roomDifficulty(this.floorIndex, [nc]);
-    const bossTs = bossesAt(difficulty).length ? this.templatesWithTag('boss', difficulty) : [];
+    const depth = depthAt(this.floorIndex, [nc]);
+    const bossTs = this.templatesWithTag('boss', depth);
     if (bossTs.length && this.rng.chance(BOSS_CHANCE)) {
-      const boss = this.attachAt(cell, d, this.rng.pick(bossTs));
+      const boss = this.attachAt(cell, d, this.rng.weighted(bossTs, (t) => templateWeight(t, depth))!);
       if (boss) {
         if (this.attachExtras(boss)) return boss;
         this.remove(boss);
       }
     }
-    const normals = this.templatesWithTag('normal', difficulty);
     for (let i = 0; i < 4; i++) {
-      const room = this.attachAt(cell, d, this.rng.weighted(normals, (t) => t.weight ?? 1)!);
+      const t = this.pickTemplate('normal', depth);
+      const room = t && this.attachAt(cell, d, t);
       if (room) return room;
     }
     return null;
@@ -219,16 +230,9 @@ export class FloorBuilder {
   result(): Expansion {
     return {
       infos: [...this.touched].map((id) => structuredClone(this.rooms.get(id)!)),
-      states: [...this.created].map((id) => initialRoomState(this.rooms.get(id)!, this.seed)),
+      states: [...this.created].map((id) => initialRoomState(this.rooms.get(id)!)),
     };
   }
-}
-
-/** Bosses that may appear at a difficulty, hardest first. */
-function bossesAt(difficulty: number): EnemyDef[] {
-  return enemyReg.all()
-    .filter((e) => e.boss && e.boss.minDifficulty <= difficulty)
-    .sort((a, b) => b.boss!.minDifficulty - a.boss!.minDifficulty);
 }
 
 /** Global tile of the door in cell `c` on side `dir`. */
@@ -273,59 +277,13 @@ export function stairsDownRooms(floor: FloorState): RoomInfo[] {
   return Object.values(floor.rooms).filter((r) => r.tags.includes('stairsDown'));
 }
 
-/**
- * Pick the enemies for a room's spawn slots. Pinned/list slots always spawn (they're the author's
- * call); boss slots take the hardest eligible boss; the rest are filled in random order from enemies
- * matching the slot's tags whose threat is within the difficulty cap, until the threat budget runs
- * out. Leftover slots stay empty, so rooms near the lobby are sparse.
- */
-export function rollRoster(layout: RoomLayout, difficulty: number, rng: Rng): MonsterRecord[] {
-  let budget = threatBudget(difficulty);
-  const out: MonsterRecord[] = [];
-  const add = (spawnId: string, def: EnemyDef) => out.push(monsterRecord(`s:${spawnId}`, def, difficulty, { spawnId }));
-  const generic = [];
-  for (const s of layout.spawns) {
-    if (s.slot.enemies) {
-      const def = enemyReg.get(rng.pick(s.slot.enemies));
-      add(s.spawnId, def);
-      budget -= def.threat;
-    } else if (s.slot.boss) {
-      const all = enemyReg.all().filter((e) => e.boss).sort((a, b) => a.boss!.minDifficulty - b.boss!.minDifficulty);
-      const def = bossesAt(difficulty)[0] ?? all[0];
-      if (def) add(s.spawnId, def);
-    } else {
-      generic.push(s);
-    }
-  }
-  for (const s of rng.shuffle(generic)) {
-    const def = pickEnemy(difficulty, budget, s.slot.tags ?? [], rng);
-    if (!def) continue;
-    add(s.spawnId, def);
-    budget -= def.threat;
-  }
-  return out;
-}
-
-/** A normal enemy for a room at `difficulty` costing at most `budget` threat (weighted toward the stronger ones). */
-export function pickEnemy(difficulty: number, budget: number, tags: string[], rng: Rng): EnemyDef | undefined {
-  const cap = threatCap(difficulty);
-  const options = enemyReg.all().filter((e) => !e.boss && e.threat <= cap && e.threat <= budget && tags.every((t) => e.tags.includes(t)));
-  return rng.weighted(options, (e) => 1 + e.threat);
-}
-
-/** A roster record, with the health multiplier for difficulty beyond the strongest content. */
-export function monsterRecord(id: string, def: EnemyDef, difficulty: number, extra: Partial<MonsterRecord> = {}): MonsterRecord {
-  const maxThreat = Math.max(...enemyReg.all().filter((e) => !e.boss).map((e) => e.threat));
-  const hpMul = def.boss
-    ? 1 + 0.25 * Math.max(0, difficulty - def.boss.minDifficulty)
-    : 1 + 0.15 * Math.max(0, threatCap(difficulty) - maxThreat);
-  const rec: MonsterRecord = { id, defId: def.id, ...extra };
-  if (hpMul > 1.001) rec.hpMul = Math.round(hpMul * 100) / 100;
-  return rec;
+/** A room's starting monsters: exactly the ones its template puts on its map. */
+export function templateRoster(layout: RoomLayout): MonsterRecord[] {
+  return layout.spawns.map((s) => ({ id: `s:${s.spawnId}`, defId: s.enemy, spawnId: s.spawnId }));
 }
 
 /** Build the initial persistent state for a freshly generated room. */
-export function initialRoomState(info: RoomInfo, worldSeed = 0): RoomState {
+export function initialRoomState(info: RoomInfo): RoomState {
   const t = roomTemplates.get(info.templateId);
   const state: RoomState = {
     id: info.id,
@@ -342,115 +300,47 @@ export function initialRoomState(info: RoomInfo, worldSeed = 0): RoomState {
     groundItems: [],
   };
   const layout = new RoomLayout(info, state);
-  const rng = new Rng(deriveSeed(worldSeed, `room:${info.id}`));
-  state.monsters = rollRoster(layout, info.difficulty, rng);
-  let n = 0;
-  const { w: mw, h: mh } = templateMapSize(t);
-  for (const f of t.furniture ?? []) {
-    const def = furnitureReg.get(f.def);
-    const rot = f.rot ?? 0;
-    const { w, h } = footprint(def, rot);
-    const a = templateToGlobal(info, t, f.x, f.y);
-    const c = templateToGlobal(info, t, Math.min(mw - 1, f.x + w - 1), Math.min(mh - 1, f.y + h - 1));
-    state.furniture.push({
-      uid: `${info.id}-furn${n++}`,
-      defId: f.def,
-      x: Math.min(a.x, c.x),
-      y: Math.min(a.y, c.y),
-      rot,
-      contents: def.container
-        ? Array.from({ length: def.container.slots }, (_, i) => {
-            const e = f.contents?.[i];
-            if (!e) return null;
-            const id = typeof e === 'string' ? e : e.id;
-            const item = createItem(id, `${info.id}-item${n++}`);
-            if (typeof e !== 'string' && item.contents) e.contents.forEach((c, j) => (item.contents![j] = createItem(c, `${info.id}-item${n++}`)));
-            return item;
-          })
-        : undefined,
-    });
-  }
-  layout.rebuildFurniture();
+  state.monsters = templateRoster(layout);
   placeMapFurniture(layout);
-  placeFurnitureSlots(layout, info.difficulty, rng);
-  placeUtilitySources(layout, info.difficulty, rng);
   return state;
 }
 
-/** Chance that a room past the lobby's surroundings holds a utility source. */
-const SOURCE_CHANCE = 0.07;
-
 /**
- * Utility sources (D22/D25): every Backrooms lobby gets a generator and a water main; rooms farther
- * out sometimes hold one (either kind), worth claiming and wiring up. Fixed furniture, placed on free
- * floor near a corner (lobby) or the middle (elsewhere).
+ * Add the furniture a template's map holds to a new room's state. A legend character marks the
+ * footprint's top-left tile as the template is drawn; mirrored rooms mirror the spot and the facing.
+ * Uids derive from the map coordinate (`<room>-map<mx>,<my>`).
  */
-function placeUtilitySources(layout: RoomLayout, difficulty: number, rng: Rng): void {
-  const { info, state } = layout;
-  if (info.floor === APARTMENT_FLOOR) return;
-  const lobby = info.tags.includes('lobby');
-  const kinds = lobby ? ['generator', 'water_main'] : difficulty >= 2 && rng.chance(SOURCE_CHANCE) ? [rng.chance(0.5) ? 'generator' : 'water_main'] : [];
-  const c = info.cells[0]!;
-  kinds.forEach((defId, i) => {
-    const def = furnitureReg.get(defId);
-    const near = lobby ? { x: c.cx * CELL_W + 3 + i * 12, y: c.cy * CELL_H + 2 } : { x: c.cx * CELL_W + 9, y: c.cy * CELL_H + 5 };
-    const spot = layout.findFurnitureSpot(def, near.x, near.y);
-    if (!spot) return;
-    state.furniture.push({ uid: `${info.id}-src-${defId}`, defId, x: spot.x, y: spot.y, rot: 0 });
-    layout.rebuildFurniture();
-  });
-}
-
-/**
- * Add the furniture drawn into a template's ASCII map (e.g. `*` braziers) to a room's state.
- * Uids derive from the map coordinate, so this is idempotent; tiles that are overridden, reserved
- * or already furnished are skipped. Also used by the save migration that turned braziers into furniture.
- */
-export function placeMapFurniture(layout: RoomLayout): void {
+function placeMapFurniture(layout: RoomLayout): void {
   const { info, template: t, state } = layout;
   const legend = legendFor(t);
+  let items = 0;
+  const item = (id: string) => createItem(id, `${info.id}-item${items++}`);
   t.map.forEach((row, my) => {
     for (let mx = 0; mx < row.length; mx++) {
       const e = legend[row[mx]!];
       if (!e || !('furniture' in e)) continue;
-      const uid = `${info.id}-map${mx},${my}`;
-      if (state.furniture.some((f) => f.uid === uid)) continue;
-      const { x, y } = templateToGlobal(info, t, mx, my);
-      if (tileKey(x, y) in state.tileOverrides || !layout.isBuildable(x, y)) continue;
-      state.furniture.push({ uid, defId: e.furniture, x, y, rot: 0 });
-      layout.rebuildFurniture();
+      const def = furnitureReg.get(e.furniture);
+      const { w, h } = footprint(def, e.rot ?? 0);
+      const a = templateToGlobal(info, t, mx, my);
+      const c = templateToGlobal(info, t, mx + w - 1, my + h - 1);
+      state.furniture.push({
+        uid: `${info.id}-map${mx},${my}`,
+        defId: def.id,
+        x: Math.min(a.x, c.x),
+        y: Math.min(a.y, c.y),
+        rot: mirrorFacing(e.rot ?? 0, info.mirrorX, info.mirrorY),
+        contents: def.container
+          ? Array.from({ length: def.container.slots }, (_, i) => {
+              const entry = e.contents?.[i];
+              if (!entry) return null;
+              if (typeof entry === 'string') return item(entry);
+              const kit = item(entry.id);
+              if (kit.contents) entry.contents.forEach((id, j) => (kit.contents![j] = item(id)));
+              return kit;
+            })
+          : undefined,
+      });
     }
   });
-}
-
-/**
- * Fill the template's furniture slots (`$`, `L`…): each may hold a piece chosen by value around the
- * room's difficulty target, so better furniture is found farther from the lobby.
- */
-export function placeFurnitureSlots(layout: RoomLayout, difficulty: number, rng: Rng): void {
-  const { info, template: t, state } = layout;
-  const legend = legendFor(t);
-  const target = furnitureTarget(difficulty);
-  t.map.forEach((row, my) => {
-    for (let mx = 0; mx < row.length; mx++) {
-      const e = legend[row[mx]!];
-      if (!e || !('furnitureSlot' in e)) continue;
-      if (!rng.chance(e.furnitureSlot.chance ?? FURNITURE_SLOT_CHANCE)) continue;
-      const uid = `${info.id}-map${mx},${my}`;
-      if (state.furniture.some((f) => f.uid === uid)) continue;
-      const { x, y } = templateToGlobal(info, t, mx, my);
-      const tags = e.furnitureSlot.tags ?? [];
-      const options = furnitureReg.all().filter((f) => f.value && !f.fixed && tags.every((tag) => f.tags?.includes(tag)));
-      placing: for (let i = 0; i < 4; i++) {
-        const def = rng.weighted(options, (f) => Math.exp(-((f.value! - target) ** 2) / 2));
-        if (!def) break;
-        for (const rot of def.rotatable ? [0, 1] : [0]) {
-          if (!layout.canPlaceFurniture(def, x, y, rot)) continue;
-          state.furniture.push({ uid, defId: def.id, x, y, rot, contents: def.container ? Array(def.container.slots).fill(null) : undefined });
-          layout.rebuildFurniture();
-          break placing;
-        }
-      }
-    }
-  });
+  layout.rebuildFurniture();
 }

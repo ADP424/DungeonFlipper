@@ -4,7 +4,7 @@ export default {
   id: 'toilet',
   name: 'Toilet',
   size: { w: 1, h: 1 },
-  sprite: 'proc:toilet',
+  sprite: 'furniture/toilet',
   rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

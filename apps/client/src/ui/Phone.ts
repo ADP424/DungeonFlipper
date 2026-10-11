@@ -1,9 +1,12 @@
 import {
   absoluteMinute, describePref, formatTime, furnitureCatalog, furnitureOrder, getClock, getInbox, getOrders, getTenants, isSecure,
-  orderDef, prefScore, roomLabel, storeCatalog, tenantUnit, unitStats, type PhoneMessage, type Tenant,
+  orderDef, prefScore, roomLabel, REP_TIERS, ROLE_NAME, getReputation, getStaff, householdLabel, nextTierAt, repTier, staffCandidates, type Staff, storeCatalog, tenantUnit, unitStats, type PhoneMessage, type Tenant,
+  cashText,
 } from '@df/shared';
 import { settings } from '../settings';
-import { iconUrl } from '../engine/assets';
+import { canvasFor, iconUrl } from '../engine/assets';
+import { furnitureArt } from '../render/RoomRenderer';
+import { barWidth, pixelSize } from './pixels';
 import type { Game } from '../game/Game';
 import { tenantLook } from '../game/entities/TenantNpc';
 
@@ -14,11 +17,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, parent?
   return e;
 }
 
-const PHONE_SVG =
-  '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="1" width="8" height="14" rx="1.5" fill="currentColor"/>' +
-  '<rect x="5" y="3" width="6" height="9" fill="#14121a"/><rect x="7" y="13" width="2" height="1" fill="#14121a"/></svg>';
+/** Inner width of the phone's bars, in art pixels (.ph-moodbar). */
+const MOODBAR_W = 48;
 
-type AppId = 'messages' | 'tenants' | 'hardware' | 'map' | 'rooms' | 'sleep';
+type AppId = 'messages' | 'tenants' | 'hardware' | 'staff' | 'map' | 'rooms' | 'sleep';
 
 interface AppDef {
   id: AppId;
@@ -29,12 +31,13 @@ interface AppDef {
 }
 
 const APPS: AppDef[] = [
-  { id: 'messages', name: 'Messages', icon: 'proc:app_messages', color: '#3f9a5a' },
-  { id: 'tenants', name: 'Tenants', icon: 'proc:app_tenants', color: '#d0804a' },
-  { id: 'hardware', name: 'Hardware', icon: 'proc:app_hardware', color: '#c8a038' },
-  { id: 'map', name: 'Map', icon: 'proc:app_map', color: '#4a8ac8' },
-  { id: 'rooms', name: 'Floorplan', icon: 'proc:app_rooms', color: '#7a6ab8' },
-  { id: 'sleep', name: 'Sleep', icon: 'proc:app_sleep', color: '#2c3466' },
+  { id: 'messages', name: 'Messages', icon: 'ui/phone/messages', color: '#3f9a5a' },
+  { id: 'tenants', name: 'Tenants', icon: 'ui/phone/tenants', color: '#d0804a' },
+  { id: 'hardware', name: 'Hardware', icon: 'ui/phone/hardware', color: '#c8a038' },
+  { id: 'staff', name: 'Staff', icon: 'ui/phone/staff', color: '#3a8a8a' },
+  { id: 'map', name: 'Map', icon: 'ui/phone/map', color: '#4a8ac8' },
+  { id: 'rooms', name: 'Floorplan', icon: 'ui/phone/floorplan', color: '#7a6ab8' },
+  { id: 'sleep', name: 'Sleep', icon: 'ui/phone/sleep', color: '#2c3466' },
 ];
 
 /**
@@ -60,7 +63,7 @@ export class Phone {
 
   constructor(private game: Game, root: HTMLElement, private openMap: () => void, private onOpen: () => void = () => {}) {
     this.icon = el('div', 'phone-icon hud', root);
-    this.icon.innerHTML = PHONE_SVG;
+    el('img', '', this.icon).src = iconUrl('ui/phone');
     this.icon.addEventListener('click', () => this.toggle(!this.isOpen));
     this.hudClock = el('div', 'hud-clock', root);
     this.badge = el('div', 'phone-badge', this.icon);
@@ -133,7 +136,7 @@ export class Phone {
     const time = formatTime(c.minute, settings.clock24);
     if (`${c.day} ${time}` !== this.last.time) {
       this.last.time = `${c.day} ${time}`;
-      this.hudClock.textContent = `Day ${c.day} · ${time}`;
+      this.hudClock.innerHTML = `Day ${c.day}<br>${time}`;
       this.statusTime.textContent = time;
       this.statusDay.textContent = `Day ${c.day}`;
       this.icon.classList.toggle('late', c.minute >= 22 * 60);
@@ -153,7 +156,7 @@ export class Phone {
   private renderKey(): string {
     const st = this.game.session.state;
     const p = this.game.session.player;
-    return `${this.app}|${this.contact}|${this.history}|${getInbox(st, p.id).messages.length}|${p.cash}|${getOrders(st, p.id).items.length}|${JSON.stringify(getTenants(st))}|${this.game.showBoundaries}`;
+    return `${this.app}|${this.contact}|${this.history}|${getInbox(st, p.id).messages.length}|${p.cash}|${getOrders(st, p.id).items.length}|${JSON.stringify(getTenants(st))}|${JSON.stringify(getStaff(st))}|${getReputation(st, p.id)}|${this.game.showBoundaries}`;
   }
 
   private render(): void {
@@ -177,6 +180,7 @@ export class Phone {
         return t ? this.renderContact(body, t) : this.renderContacts(body);
       }
       case 'hardware': title.textContent = 'Hardware'; return this.renderStore(body);
+      case 'staff': title.textContent = 'Staff'; return this.renderStaff(body);
       case 'sleep': title.textContent = 'Sleep'; return this.renderSleep(body);
     }
   }
@@ -239,6 +243,17 @@ export class Phone {
   /** Everyone renting from you, and everyone viewing a listing, as contacts. */
   private renderContacts(body: HTMLDivElement): void {
     const st = this.game.session.state;
+    // Your standing: it decides who applies (D20 / D44).
+    const points = getReputation(st, this.game.session.playerId);
+    const next = nextTierAt(points);
+    const rep = el('div', 'ph-rep', body);
+    el('div', 'ph-rep-tier', rep).textContent = points < 0 ? `Reputation · infamous (applicants stay away)` : `Reputation · tier ${repTier(points)}`;
+    el('div', 'ph-rep-sub', rep).textContent = next === null ? `${points} points: the best tenants are coming` : `${points} / ${next} points to tier ${repTier(next)}`;
+    const bar = el('div', 'tip-bar ph-moodbar', rep);
+    const fill = el('div', '', bar);
+    const lo = [...REP_TIERS].reverse().find((m) => m <= points) ?? 0;
+    fill.style.width = barWidth(next === null ? 1 : (points - lo) / (next - lo), MOODBAR_W);
+    fill.style.background = '#c9a24e';
     const all = Object.values(getTenants(st)).sort((a, b) => (a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'living' ? -1 : 1));
     if (!all.length) {
       el('div', 'ph-empty', body).textContent = 'No contacts yet. Put a For Rent sign in a room you own with a bed in it, and applicants will turn up.';
@@ -265,8 +280,9 @@ export class Phone {
     const unit = tenantUnit(st, t);
     const where = unit ? roomLabel(st.floors[unit.floor]!.rooms[unit.rooms[0]!]!) : 'nowhere';
     if (t.trapped !== undefined) return `TRAPPED in ${where}`;
+    if (t.evictDay !== undefined) return `Leaving (notice) · ${where}`;
     if (t.displaced) return `Fled next door from ${where}`;
-    return t.status === 'applicant' ? `Viewing ${where}` : `$${t.rent}/day · ${where}`;
+    return t.status === 'applicant' ? `Viewing ${where}` : `${cashText(t.rent)}/day · ${where}`;
   }
 
   /** One contact: how they feel, what they pay, and what you know they want. Haggling is in person. */
@@ -275,11 +291,14 @@ export class Phone {
     const card = el('div', 'ph-card', body);
     el('img', 'ph-avatar big', card).src = iconUrl(tenantLook(t.id));
     el('div', 'ph-card-name', card).textContent = t.name;
-    el('div', 'ph-card-sub', card).textContent = `${t.status === 'applicant' ? 'Applicant' : `Tenant since day ${t.since}`} · tier ${t.tier}`;
+    el('div', 'ph-card-sub', card).textContent = `${t.status === 'applicant' ? 'Applicant' : `Tenant since day ${t.since}`} · tier ${t.tier} · ${householdLabel(t)}`;
+    if (t.members && t.members.length > 1) el('div', 'ph-card-sub', card).textContent = t.members.join(', ');
+    if (t.arrears) el('div', 'ph-card-sub bad', card).textContent = `Owes ${cashText(t.arrears)} (holding back rent)`;
+    if (t.complaint) el('div', 'ph-card-sub bad', card).textContent = `Complaint: ${({ mess: 'the mess', power: 'no power', water: 'no water', insecure: 'monsters at the door' } as const)[t.complaint.issue]} (since day ${t.complaint.since})`;
     el('div', 'ph-card-sub', card).textContent = this.contactLine(t);
     const bar = el('div', 'tip-bar ph-moodbar', card);
     const fill = el('div', '', bar);
-    fill.style.width = `${Math.max(0, Math.min(100, t.mood))}%`;
+    fill.style.width = barWidth(t.mood / 100, MOODBAR_W);
     fill.style.background = moodColor(t.mood);
     const unit = tenantUnit(st, t);
     const stats = unit ? unitStats(st, unit) : null;
@@ -301,21 +320,57 @@ export class Phone {
       : 'Visit them to talk or change the rent.';
   }
 
+  /** The Staff app: who works for you (let them go), and who's looking for work today (hire them). */
+  private renderStaff(body: HTMLDivElement): void {
+    const g = this.game;
+    const st = g.session.state;
+    const day = getClock(st).day;
+    const hired = Object.values(getStaff(st));
+    el('div', 'ph-section', body).textContent = hired.length ? `Working for you · ${cashText(hired.reduce((n, s) => n + s.wage, 0))}/day` : 'Working for you';
+    if (!hired.length) el('div', 'ph-empty', body).textContent = 'Nobody yet. Cleaners tidy up mess; handymen fix faults and patch barricades. Wages are paid every night.';
+    const row = (s: Staff, label: string, act: () => void) => {
+      const r = el('div', 'ph-contact', body);
+      el('img', 'ph-avatar', r).src = iconUrl(`ui/phone/${s.role}`);
+      const text = el('div', 'ph-contact-text', r);
+      el('div', 'ph-contact-name', text).textContent = s.name;
+      el('div', 'ph-contact-sub', text).textContent = `${ROLE_NAME[s.role]} · ${cashText(s.wage)}/day`;
+      const b = el('button', 'ph-buy', r);
+      b.textContent = label;
+      b.addEventListener('click', act);
+    };
+    for (const s of hired) row(s, 'Let go', () => {
+      g.dispatch({ type: 'staffRemoved', id: s.id });
+      g.toast(`${s.name} packed up and left.`);
+      g.syncNpcs();
+      this.render();
+    });
+    el('div', 'ph-section', body).textContent = 'Looking for work today';
+    for (const s of staffCandidates(st, day)) row(s, 'Hire', () => {
+      g.dispatch({ type: 'staffSet', staff: { ...s, floor: g.floorIndex === 0 ? 1 : g.floorIndex, since: day } });
+      g.toast(`${s.name} starts today. They look after your property on Level ${g.floorIndex === 0 ? 1 : g.floorIndex}.`);
+      g.syncNpcs();
+      this.render();
+    });
+  }
+
   /** The Hardware app: buy with cash, delivered to your apartment when the day ends. */
   private renderStore(body: HTMLDivElement): void {
     const g = this.game;
     const p = g.session.player;
-    el('div', 'ph-cash', body).textContent = `You have $${p.cash}`;
+    el('div', 'ph-cash', body).textContent = `You have ${cashText(p.cash)}`;
     const pending = getOrders(g.session.state, p.id).items;
     if (pending.length) el('div', 'ph-empty', body).textContent = `Arriving tomorrow morning: ${pending.map((e) => orderDef(e).name).join(', ')}`;
     const row = (icon: string, name: string, title: string, price: number, entry: string) => {
       const r = el('div', 'phone-store-row', body);
-      el('img', 'phone-store-icon', r).src = iconUrl(icon);
+      const img = el('img', 'phone-store-icon', r);
+      img.src = iconUrl(icon);
+      const art = canvasFor(icon);
+      pixelSize(img, art.width, art.height);
       const n = el('div', 'phone-store-name', r);
       n.textContent = name;
       n.title = title;
       const buy = el('button', 'ph-buy', r);
-      buy.textContent = `$${price}`;
+      buy.textContent = cashText(price);
       buy.disabled = p.cash < price;
       buy.addEventListener('click', () => {
         g.dispatch({ type: 'orderPlaced', playerId: p.id, items: [entry], cost: price });
@@ -327,8 +382,7 @@ export class Phone {
     for (const def of storeCatalog()) row(def.icon, def.name, def.description, def.price!, def.id);
     el('div', 'ph-section', body).textContent = 'Furniture · set down in your apartment';
     for (const def of furnitureCatalog()) {
-      const icon = typeof def.sprite === 'string' ? def.sprite : def.sprite.tiles[0]![0]!;
-      row(icon, def.name, 'Delivered onto your apartment floor. Carry it wherever you like.', def.price!, furnitureOrder(def.id));
+      row(furnitureArt(def.id, 0).key, def.name, 'Delivered onto your apartment floor. Carry it wherever you like.', def.price!, furnitureOrder(def.id));
     }
   }
 
@@ -337,7 +391,7 @@ export class Phone {
     const g = this.game;
     const secure = isSecure(g.session.state, g.room.info.id);
     const box = el('div', 'ph-confirm', body);
-    el('img', 'ph-confirm-icon', box).src = iconUrl('proc:app_sleep');
+    el('img', 'ph-confirm-icon', box).src = iconUrl('ui/phone/sleep');
     if (!secure) {
       el('div', 'ph-confirm-text', box).textContent = "You can't sleep here: it isn't secure. Get somewhere safe first (your apartment, or a room you own that's cleared and barricaded).";
       return;

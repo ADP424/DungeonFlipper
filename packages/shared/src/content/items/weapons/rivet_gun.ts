@@ -5,6 +5,6 @@ export default {
   kind: 'weapon',
   name: 'Rivet Gun',
   description: 'Very fast, piercing rivets with a slow reload.',
-  icon: 'proc:crossbow',
+  icon: 'items/weapons/rivet_gun',
   attack: { type: 'ranged', projectile: 'rivet', damage: 6, cooldown: 1.1, knockback: 4 },
 } satisfies WeaponDef;

@@ -3,7 +3,7 @@ import type { ObstacleDef } from '../types';
 export default {
   id: 'broken_glass',
   name: 'Broken Glass',
-  sprite: 'td:41',
+  sprite: 'obstacles/broken_glass',
   blocksMovement: [],
   blocksProjectiles: [],
   height: 'none',

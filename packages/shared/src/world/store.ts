@@ -1,3 +1,4 @@
+import { CELL_H, CELL_W, cellCenter } from '../core/constants';
 import { furniture as furnitureReg, items as itemReg } from '../content/registry';
 import type { FurnitureDef, ItemDef } from '../content/types';
 import type { Rng } from '../core/rng';
@@ -66,7 +67,7 @@ export function deliverOrders(state: WorldState, ctx: { day: number; rng: Rng })
       const uid = `order${ctx.day}-${i}-${Math.floor(ctx.rng.next() * 2 ** 31).toString(36)}`;
       if (entry.startsWith('f:')) {
         const def = furnitureReg.get(entry.slice(2));
-        const spot = new RoomLayout(room, scratch).findFurnitureSpot(def, c.cx * 19 + 9, c.cy * 11 + 6);
+        const spot = new RoomLayout(room, scratch).findFurnitureSpot(def, cellCenter(c).x, cellCenter(c).y + 1);
         if (!spot) return void remaining.push(entry);
         const placement = { uid, defId: def.id, x: spot.x, y: spot.y, rot: 0 };
         scratch.furniture.push(placement);
@@ -74,7 +75,7 @@ export function deliverOrders(state: WorldState, ctx: { day: number; rng: Rng })
       } else {
         out.push({
           type: 'groundItemAdded', roomId: room.id,
-          item: { uid, x: c.cx * 19 + 5 + (i % 5) * 0.8, y: c.cy * 11 + 7 + Math.floor(i / 5) * 0.8, item: createItem(entry, `${uid}i`) },
+          item: { uid, x: c.cx * CELL_W + 3 + (i % 5) * 0.8, y: c.cy * CELL_H + 5 + Math.floor(i / 5) * 0.8, item: createItem(entry, `${uid}i`) },
         });
       }
       delivered++;

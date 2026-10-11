@@ -4,8 +4,8 @@ export default {
   id: 'sledgehammer',
   kind: 'weapon',
   name: 'Sledgehammer',
-  description: 'Slow, wide and heavy. With nothing alive in the room, it knocks down any wall (low 1 use, tall 2). Hold it on the structural wall between two rooms to knock it through (2 uses).',
-  icon: 'td:106',
+  description: 'Slow, wide and heavy. Hold it on any wall to knock it down, or on the structural wall between two rooms to knock it through (1 use each).',
+  icon: 'items/weapons/sledgehammer',
   attack: {
     type: 'melee',
     pattern: 'arc',

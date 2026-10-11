@@ -7,6 +7,6 @@ export default {
   radius: 0.12,
   lifetime: 1.2,
   pierce: 1,
-  sprite: 'proc:bolt',
+  sprite: 'projectiles/rivet',
   orient: true,
 } satisfies ProjectileDef;

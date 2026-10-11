@@ -3,6 +3,7 @@ import { tileKey } from '../core/geometry';
 import type { FurnitureDef, MovementKind, ObstacleDef, TrajectoryKind } from '../content/types';
 import { BOUNDARY_WALL, RoomLayout, cellKey, type TileKind } from './layout';
 import type { Barricade, Dir, FurniturePlacement, RoomInfo, WorldState } from './types';
+import type { Box } from './furniture';
 
 /**
  * Areas: what the runtime simulates and draws at once. In the dungeon an area is a single room; your
@@ -183,8 +184,10 @@ export class AreaLayout implements TileQueries {
     return !!this.roomAt(x, y)?.isBoundary(x, y);
   }
 
+  /** A room's own outer wall, still standing as generated (not one rebuilt in a gap). */
   isStructural(x: number, y: number): boolean {
-    return this.obstacleIdAt(x, y) === BOUNDARY_WALL;
+    const L = this.roomAt(x, y);
+    return !!L && L.isBoundary(x, y) && !(tileKey(x, y) in L.state.tileOverrides);
   }
 
   barricadeAt(x: number, y: number): Barricade | undefined {
@@ -211,6 +214,16 @@ export class AreaLayout implements TileQueries {
   blocksProjectile(x: number, y: number, t: TrajectoryKind): boolean {
     const L = this.roomAt(x, y);
     return L ? L.blocksProjectile(x, y, t) : true;
+  }
+
+  solidsAt(x: number, y: number, kind: MovementKind): Box[] {
+    const L = this.roomAt(x, y);
+    return L ? L.solidsAt(x, y, kind) : [{ x, y, w: 1, h: 1 }];
+  }
+
+  blocksProjectileAt(px: number, py: number, t: TrajectoryKind): boolean {
+    const L = this.roomAt(Math.floor(px), Math.floor(py));
+    return L ? L.blocksProjectileAt(px, py, t) : true;
   }
 
   isOpenFloor(x: number, y: number): boolean {

@@ -49,6 +49,7 @@ The game stops being generic fantasy. You play an ambitious property developer w
   - **Attacking never spends uses** (D40).
   - **Renovating does.** At 0 uses the item stays a weapon but can't renovate any more, until you refill it with a kit of the same tool kind (stacking rule).
 - **Input (Q2): context-sensitive.** In a room you own with no living enemies, left click renovates the outlined tile. Anywhere else it attacks. No new inputs are needed.
+  - **Revised (2026-10):** the room deciding was unintuitive and went wrong at doorways with monsters just through them. A click now always attacks; holding the button on a workable tile for half a second renovates it, anywhere, monsters or not. Landing a hit starts the hold over, and moving to another tile with the button still down starts on that one.
 - **Pure tools** (plywood, drywall kit, rolls) stay non-weapons.
 
 ## 4. Retheme table (proposal: edit freely)
@@ -78,7 +79,7 @@ Behaviours stay the same; only names, sprites and palettes change unless noted.
 | broadsword | Sledgehammer | Demolish (tall walls too) |
 | battle_axe | Fire Axe | Demolish |
 | spear | Push Broom | none (long reach) |
-| shortbow | Nail Gun | Build plank patches (fill holes) |
+| shortbow | Nail Gun | Build plank patches (fill holes). Revised 2026-10: mends barricades instead, 10 durability a use |
 | crossbow | Rivet Gun | none |
 | fire_wand | Blowtorch | none |
 | frost_staff | Fire Extinguisher | none (slowing) |

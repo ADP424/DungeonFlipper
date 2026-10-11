@@ -1,6 +1,8 @@
 import { registerSecuring } from './securing';
 import { registerStore } from './store';
 import { registerTenants } from './tenants';
+import { registerStaff } from './staff';
+import { registerRealtors } from './realtors';
 import { registerUtilities } from './utilities';
 
 let registered = false;
@@ -11,6 +13,9 @@ export function registerAllResolvers(): void {
   registered = true;
   registerSecuring();
   registerStore();
+  // Staff work before tenants judge their units.
+  registerStaff();
   registerTenants();
+  registerRealtors();
   registerUtilities();
 }

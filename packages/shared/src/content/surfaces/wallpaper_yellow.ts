@@ -5,5 +5,5 @@ export default {
   id: 'wallpaper_yellow',
   name: 'Mono-Yellow Wallpaper',
   applies: 'wall',
-  pattern: { style: 'stripes', base: 0xc9b458, accent: 0xbca84c },
+  sprite: 'wallpaper/wallpaper_yellow',
 } satisfies SurfaceDef;

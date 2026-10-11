@@ -4,7 +4,7 @@ export default {
   id: 'space_heater',
   name: 'Space Heater',
   size: { w: 1, h: 1 },
-  sprite: 'ri:182',
+  sprite: 'furniture/space_heater',
   rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

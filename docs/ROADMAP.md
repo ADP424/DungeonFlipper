@@ -7,7 +7,7 @@ The game has a working core: you clear a room to own it, then renovate and furni
 - infinite, difficulty-graded floors
 - a Backrooms-style comedic retheme
 
-This roadmap records the design decisions made so far (D1–D54), what they mean for the engine, and the phases they ship in. Each phase gets a detailed plan in `docs/plans/` when it starts. The open questions listed under each phase are answered then.
+This roadmap records the design decisions made so far (D1–D60), what they mean for the engine, and the phases they ship in. Each phase gets a detailed plan in `docs/plans/` when it starts. The open questions listed under each phase are answered then.
 
 ### What exists today (from the code survey)
 - **Ownership** is `RoomState.owned: boolean`, set the moment a room is cleared (`roomOwned`). Doors have no state (`DoorInfo {x,y,dir,toRoom}`). Enemies can't cross door tiles, and combat is client-only, per room.
@@ -46,13 +46,13 @@ This roadmap records the design decisions made so far (D1–D54), what they mean
   - They grow lazily outward from the lobby.
   - Saves are split into region docs so that `floor:N` doesn't grow without bound.
   - Going downstairs starts a harder baseline and a new biome/"Level".
-- **D29 Difficulty = floor baseline + cell distance from the lobby**, so it forms rings. It is deterministic under lazy generation.
-- **D33 Spawns use generic slots plus a threat budget.**
+- **D29 (revised by D56) Difficulty = floor baseline + cell distance from the lobby**, so it forms rings. It is deterministic under lazy generation. This number is now called *depth* and only decides which rooms may appear.
+- **D33 (superseded by D55) Spawns use generic slots plus a threat budget.**
   - Template characters mark slot kinds.
   - A seeded pick fills each slot from enemies whose `threat` fits the room's difficulty.
   - `EnemyDef` gains `threat` and `tags`.
 - **D34 Boss rooms are rare and random.**
-  - Each boss has a minimum difficulty, so farther out means harder bosses.
+  - ~~Each boss has a minimum difficulty~~ Each boss room template has a difficulty (D56), so farther out means harder bosses.
   - A floor can have several boss rooms.
   - "Boss room has stairs" is a soft template rule, not an engine invariant.
 - **D17/D23/D30 Lobbies, apartment and travel:**
@@ -75,7 +75,7 @@ This roadmap records the design decisions made so far (D1–D54), what they mean
   - A cleared room with no frontier doors becomes secured automatically.
 - **D9 Barricades work as doors.** Higher tiers are lockable doors that you pass through freely and monsters must bash, and that bashing is the decay. Low-tier planks have to be removed and re-placed.
 - **D37 (revised in P3) A barricade belongs to the doorway.** It's mirrored onto both door tiles with one shared HP, so it shows, blocks and can be removed from either side. You can't barricade between two rooms you own. The original wording follows: **A barricade is stored on the secured side**, in that room's `RoomState`, keyed by door. If both sides become secured, the barricade becomes optional.
-- **D10 (revised in P3) Monster rosters and incursions:** every unbarricaded door that doesn't lead to calm owned property spills monsters into visited rooms each hour, until the room's threat capacity. A cleared room refills unless it's barricaded, and it's only owned once every door is barricaded or leads to your rooms. The original wording follows:
+- **D10 (revised in P3; capacity and what spills revised by D57) Monster rosters and incursions:** every unbarricaded door that doesn't lead to calm owned property spills monsters into visited rooms each hour, until the room's threat capacity. A cleared room refills unless it's barricaded, and it's only owned once every door is barricaded or leads to your rooms. The original wording follows:
   - Rooms persist a roster (def id plus HP) of *all* monsters present, which replaces the semantics of `deadSpawnIds`.
   - Template spawns never respawn.
   - On day ticks, unowned frontier rooms roll incursions into their rosters (capped by difficulty) and put pressure on adjacent barricades. Nothing unseen is simulated.
@@ -118,6 +118,16 @@ This roadmap records the design decisions made so far (D1–D54), what they mean
   - A narrow connector is a hallway.
 - **D24 A unit is rentable only if it connects to its floor's lobby through secured rooms.** If a breach cuts that path, tenants get upset and may leave.
 
+### Combat and rooms (the balance pass after P8)
+
+- **D55 Rooms are designed, not rolled.** A template says exactly which enemy stands where and which furniture stands where (including utility sources); nothing in a room is random. Each template names its own map characters in its `legend`, so there's no shared alphabet to run out of. Supersedes D33 and the furniture slots. The goal is hundreds of hand-made rooms; until then, expect repeats.
+- **D56 Difficulty is descriptive.** A room's difficulty is its designer's rating. It decides where the room may appear (only at a depth of at least its difficulty, more often farther out) and nothing about its contents. The same enemy has the same stats everywhere: the health scaling by difficulty is gone. Harder places hold harder rooms. Enemies carry a difficulty rating too, on roughly the same scale; neither has a fixed range, and keeping them proportional is the designer's job.
+- **D57 Spill comes from the room next door.** Monsters entering a cleared room are more of whatever is in the uncleared room they come from, until the invaded room holds about 3.5× that room's difficulty in enemy difficulty (three or four of its typical enemy). Later, rooms farther off may contribute too.
+- **D58 Every enemy is unique.** One brain per enemy; two enemies rarely share a movement pattern, and never the whole of one. Wind-ups are animations defined per enemy. Enemies hold items the way the player does. Combat aims at The Binding of Isaac's difficulty: small enemies take 2–3 hits from a middling weapon, bulky ones 5 or more, and food drops are rare. Rare drops and sleeping are the only healing.
+- **D59 Every enemy has its own loot.** No shared loot tables; lists several enemies share are written once and referenced.
+- **D60 No permanent upgrades.** The passive items are removed and max hearts are fixed at three. Progression comes from better items. If one-time upgrades come back, it'll be a new system, shown (at most) in a menu.
+- **Deferred:** weapon balance (knockback should cost damage or speed; ranged weapons currently outclass melee), weapon tiers and drop rates by depth, and long-term progression.
+
 ### NPCs
 - **D44 Tenant tiers:**
   - Every tenant has a tier, and each tier has a hard rent ceiling. Their valuation = min(tier ceiling, how much their preferences value the unit).
@@ -138,6 +148,8 @@ This roadmap records the design decisions made so far (D1–D54), what they mean
   - The layer never blocks anything and is shown as an x-ray overlay only while you hold a utility tool.
   - Faults show up as symptoms (puddles, sparks) that you trace back to the bad segment.
 - **P6 as decided:** electric fixtures (lamps included) need power, but only in property someone owns (rooms nobody owns run on the Backrooms' own hum; the apartment is on the landlord's supply). Networks have no capacity limit. Utilities raise every tenant's valuation, and some tenants require one. Faults are random per tick, shown by puddles or sparks, and repaired with the laying tool. Details in `docs/plans/P6-utilities.md`.
+- **P7 as decided:** households need sleeping spots (a double bed sleeps 2; families also need 2 beds). Staff are a cleaner and a handyman, paid nightly. Eviction is 3 days' notice, fair if they owe rent or are miserable. Mess comes from tenants daily and from monsters (spill-ins and deaths). Reputation tiers at 40 and 100 points. Details in `docs/plans/P7-tenants-v2.md`.
+- **P8 as decided:** realtors claim free cleared rooms. Trade covers rooms both ways, stock, and selling items. Temperaments are Amiable, Competitive (undercut and poach unhappy tenants) and Hostile (plus thug raids with a warning). Concessions step them down. Attacking or robbing them provokes their office (guards for wealthier realtors); killing one costs −60 reputation; reputation can go negative. Details in `docs/plans/P8-rival-realtors.md`.
 - **D22/D25 Sources:**
   - Every lobby has a **generator** (power) and a **water source**.
   - More sources appear in generated rooms farther out, and you must secure them and connect them up.

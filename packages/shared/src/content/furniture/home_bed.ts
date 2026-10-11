@@ -5,7 +5,7 @@ export default {
   id: 'home_bed',
   name: 'Your Bed',
   size: { w: 1, h: 2 },
-  sprite: { tiles: [['proc:bed_top'], ['proc:bed_bottom']] },
+  sprite: 'furniture/home_bed',
   rotatable: true,
   height: 0.5,
   blocksMovement: ['walk'],

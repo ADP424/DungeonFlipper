@@ -1,5 +1,6 @@
 import type { ObstacleDef } from '../types';
 import backroomsWall from './backrooms_wall';
+import backroomsWallShort from './backrooms_wall_short';
 import concreteWall from './concrete_wall';
 import concreteWallShort from './concrete_wall_short';
 import missingFloor from './missing_floor';
@@ -13,6 +14,7 @@ import stairsUp from './stairs_up';
 
 export default [
   backroomsWall,
+  backroomsWallShort,
   concreteWall,
   concreteWallShort,
   missingFloor,

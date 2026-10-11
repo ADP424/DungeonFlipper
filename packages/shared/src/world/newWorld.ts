@@ -34,7 +34,6 @@ export function createPlayer(id: string, floor: FloorState): PlayerState {
       armor: null,
       slots: Array.from({ length: HOTBAR_STORAGE_SLOTS }, () => null),
     },
-    passives: [],
     carrying: null,
     deaths: 0,
   };

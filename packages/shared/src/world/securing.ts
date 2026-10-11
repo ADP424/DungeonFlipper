@@ -1,12 +1,13 @@
 import { furniture as furnitureReg, items as itemReg, roomTemplates } from '../content/registry';
 import type { Rng } from '../core/rng';
+import type { EnemyDef } from '../content/types';
 import { registerDaily, registerTick } from './advance';
 import type { Command } from './commands';
-import { APARTMENT_FLOOR, threatBudget } from './difficulty';
-import { monsterRecord, pickEnemy } from './generator';
+import { APARTMENT_FLOOR, spillCapacity } from './difficulty';
 import { enemies as enemyReg } from '../content/registry';
 import { doorKey, partnerDoor } from './doors';
 import { openings } from './area';
+import { RoomLayout, inward } from './layout';
 
 import type { Barricade, DoorInfo, RoomInfo, RoomState, WorldState } from './types';
 
@@ -122,12 +123,14 @@ export function roomLabel(info: RoomInfo): string {
   return `the ${name} (Level ${info.floor})`;
 }
 
-const threatOf = (room: RoomState) => room.monsters.reduce((s, m) => s + (enemyReg.tryGet(m.defId)?.threat ?? 1), 0);
+/** How much is in a room: the difficulty of every monster in it. */
+const loadOf = (room: RoomState) => room.monsters.reduce((s, m) => s + (enemyReg.tryGet(m.defId)?.difficulty ?? 0), 0);
 const rid = (rng: Rng, prefix: string) => `${prefix}${Math.floor(rng.next() * 2 ** 31).toString(36)}${Math.floor(rng.next() * 2 ** 31).toString(36)}`;
 
 /**
  * One 15-minute tick: barricades with monsters behind them wear down (and break), and monsters come
- * through unbarricaded doors from uncleared rooms into every room you've visited, up to its capacity.
+ * through unbarricaded doors from uncleared rooms into every room you've visited: more of whatever
+ * lives behind that door, until the room holds as much as that neighbour spills (`spillCapacity`).
  * Only rooms you own getting invaded are reported (urgently); unowned rooms refill silently.
  */
 export function securingTick(
@@ -145,16 +148,23 @@ export function securingTick(
       const room = state.rooms[info.id];
       if (!room?.visited || quiet.has(info.id)) continue;
       const wasClear = room.monsters.length === 0;
-      let threat = threatOf(room);
-      const budget = threatBudget(info.difficulty);
+      let load = loadOf(room);
       const damaged: Record<string, number> = {};
-      const arrive = (door: DoorInfo) => {
+      const arrive = ({ door, neighbor }: DoorStatus) => {
+        // Monsters like the ones behind the door come through (the room behind keeps its own).
+        const pool = (state.rooms[neighbor.id]?.monsters ?? [])
+          .map((m) => enemyReg.tryGet(m.defId))
+          .filter((d): d is EnemyDef => !!d && !d.boss && !d.npc);
+        const capacity = spillCapacity(neighbor.difficulty);
         let n = 0;
-        for (let i = rng.chance(PAIR_CHANCE) ? 2 : 1; i > 0; i--) {
-          const def = pickEnemy(info.difficulty, budget - threat, [], rng);
-          if (!def) break;
-          out.push({ type: 'monsterAdded', roomId: info.id, record: monsterRecord(rid(rng, 'm'), def, info.difficulty, { door: doorKey(door) }) });
-          threat += def.threat;
+        for (let i = rng.chance(PAIR_CHANCE) ? 2 : 1; i > 0 && pool.length && load < capacity; i--) {
+          const def = rng.pick(pool);
+          out.push({ type: 'monsterAdded', roomId: info.id, record: { id: rid(rng, 'm'), defId: def.id, door: doorKey(door) } });
+          // They don't come in tidily.
+          const [ix, iy] = inward(door.dir);
+          const mx = door.x + ix * (1 + rng.int(0, 1)), my = door.y + iy * (1 + rng.int(0, 1)) + (ix ? rng.int(-1, 1) : 0);
+          if (new RoomLayout(info, room).isOpenFloor(mx, my)) out.push({ type: 'messAdded', roomId: info.id, x: mx, y: my });
+          load += def.difficulty;
           n++;
         }
         return n > 0;
@@ -176,8 +186,8 @@ export function securingTick(
           }
           out.push({ type: 'barricadeSet', roomId: info.id, door: doorKey(d.door), barricade: null });
           breached = true;
-          if (arrive(d.door)) arrived = true;
-        } else if (rng.chance(SPAWN_CHANCE) && arrive(d.door)) {
+          if (arrive(d)) arrived = true;
+        } else if (rng.chance(SPAWN_CHANCE) && arrive(d)) {
           arrived = true;
         }
       }

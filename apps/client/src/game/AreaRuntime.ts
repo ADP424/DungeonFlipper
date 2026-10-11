@@ -1,13 +1,15 @@
 import { Container } from 'pixi.js';
 import {
   AreaLayout, CELL_H, CELL_W, inward, isOwnedBy, tileKey,
-  type DoorInfo, type MovementKind, type RoomInfo, type RoomState, type TrajectoryKind, type WorldState,
+  type DoorInfo, type FurniturePlacement, type MovementKind, type RoomInfo, type RoomState, type TrajectoryKind, type WorldState,
 } from '@df/shared';
-import { lineClear, type BlockedFn } from '../engine/collision';
-import { RoomRenderer } from '../render/RoomRenderer';
+import { lineClear, type PointBlockedFn, type Solid, type SolidsFn } from '../engine/collision';
+import { RoomRenderer, furnitureArtHit, furnitureDepth } from '../render/RoomRenderer';
 import type { Enemy } from './entities/Enemy';
 import type { GroundItemEntity } from './entities/GroundItemEntity';
 import type { Projectile } from './entities/Projectile';
+import type { Puddle } from './entities/Puddle';
+import type { StaffNpc } from './entities/StaffNpc';
 import type { TenantNpc } from './entities/TenantNpc';
 
 const DIRS8: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
@@ -24,8 +26,12 @@ export class AreaRuntime {
   readonly enemies: Enemy[] = [];
   readonly projectiles: Projectile[] = [];
   readonly items: GroundItemEntity[] = [];
+  /** Patches on the floor that slow the player. */
+  readonly puddles: Puddle[] = [];
   /** Tenants and applicants whose unit is in an active room. */
   readonly npcs: TenantNpc[] = [];
+  /** Staff at work in the area (P7). */
+  readonly staff: StaffNpc[] = [];
   /** Tiles just outside doors that lead out of the area (the partner door tiles) → door. */
   readonly exits = new Map<string, DoorInfo>();
   /** Decides whether the player may walk through a given exit (e.g. not while carrying into unowned rooms). */
@@ -35,7 +41,7 @@ export class AreaRuntime {
   private flow: Int32Array = new Int32Array(1);
   private flowFrom = '';
   private flowAge = 0;
-  private blockers = new Map<string, BlockedFn>();
+  private blockers = new Map<string, SolidsFn>();
   player!: { x: number; y: number };
 
   /** `viewerId`: the player this runtime is shown to (ownership checks are from their point of view). */
@@ -162,36 +168,51 @@ export class AreaRuntime {
   }
 
   /**
-   * Collision function for a movement kind. Exits (door thresholds out of the area) are only passable
-   * to the player. Monsters walk through doors inside the area.
+   * The solid boxes on a tile for a movement kind (whole tiles for walls, a piece's boxes for furniture).
+   * Exits (door thresholds out of the area) are only passable to the player. Monsters walk through
+   * doors inside the area.
    */
-  blockerFor(kind: MovementKind, who: 'player' | 'enemy'): BlockedFn {
+  blockerFor(kind: MovementKind, who: 'player' | 'enemy'): SolidsFn {
     const key = `${kind}:${who}`;
     let fn = this.blockers.get(key);
     if (!fn) {
+      const whole = (tx: number, ty: number): Solid[] => [{ x: tx, y: ty, w: 1, h: 1 }];
       fn = (tx, ty) => {
         const k = this.layout.kindAt(tx, ty);
-        if (k === 'void') {
-          const door = this.exits.get(tileKey(tx, ty));
-          return !(door && who === 'player');
-        }
-        if (who === 'enemy' && k === 'door' && !this.isInternalDoor(tx, ty)) return true;
-        return this.layout.blocksMovement(tx, ty, kind);
+        if (k === 'void') return this.exits.get(tileKey(tx, ty)) && who === 'player' ? [] : whole(tx, ty);
+        if (who === 'enemy' && k === 'door' && !this.isInternalDoor(tx, ty)) return whole(tx, ty);
+        return this.layout.solidsAt(tx, ty, kind);
       };
       this.blockers.set(key, fn);
     }
     return fn;
   }
 
+  /** The front-most piece of furniture whose art is drawn at a world point (tiles), if any. */
+  furnitureAtPoint(x: number, y: number): FurniturePlacement | undefined {
+    let best: FurniturePlacement | undefined, bestZ = -Infinity;
+    for (const f of this.layout.furniture()) {
+      const base = this.layout.onTopOf(f);
+      const z = furnitureDepth(f, base);
+      if (z > bestZ && furnitureArtHit(f, base, x, y)) [best, bestZ] = [f, z];
+    }
+    return best;
+  }
+
+  /** Whether a point (tiles) is inside something solid for a mover. */
+  blockedAt(x: number, y: number, kind: MovementKind, who: 'player' | 'enemy'): boolean {
+    return this.blockerFor(kind, who)(Math.floor(x), Math.floor(y)).some((s) => x >= s.x && x < s.x + s.w && y >= s.y && y < s.y + s.h);
+  }
+
   projectileBlocked(x: number, y: number, t: TrajectoryKind): boolean {
-    return this.layout.blocksProjectile(Math.floor(x), Math.floor(y), t);
+    return this.layout.blocksProjectileAt(x, y, t);
   }
 
   lineClear(ax: number, ay: number, bx: number, by: number, mode: TrajectoryKind | MovementKind): boolean {
-    const blocked: BlockedFn =
+    const blocked: PointBlockedFn =
       mode === 'straight' || mode === 'lobbed'
-        ? (tx, ty) => this.layout.blocksProjectile(tx, ty, mode)
-        : (tx, ty) => this.walkBlocked(tx, ty, mode);
+        ? (x, y) => this.layout.blocksProjectileAt(x, y, mode)
+        : (x, y) => this.blockedAt(x, y, mode, 'enemy') || !!this.layout.obstacleAt(Math.floor(x), Math.floor(y))?.hazard?.affects.includes(mode);
     return lineClear(ax, ay, bx, by, blocked);
   }
 
@@ -280,6 +301,13 @@ export class AreaRuntime {
     return pool[Math.floor(Math.random() * pool.length)]!;
   }
 
+  /** Move-speed multiplier for the player at a point: the worst puddle they're standing in. */
+  slowAt(x: number, y: number): number {
+    let slow = 1;
+    for (const p of this.puddles) if (p.contains(x, y)) slow = Math.min(slow, p.def.slow);
+    return slow;
+  }
+
   randomOpenTile(filter: (x: number, y: number) => boolean, kind: MovementKind = 'walk'): { x: number; y: number } | null {
     const tiles: { x: number; y: number }[] = [];
     for (const t of this.layout.tiles()) {
@@ -294,7 +322,9 @@ export class AreaRuntime {
     this.renderers.clear();
     for (const e of this.enemies) e.view.destroy({ children: true });
     for (const p of this.projectiles) p.view.destroy({ children: true });
+    for (const p of this.puddles) p.view.destroy({ children: true });
     for (const i of this.items) i.view.destroy({ children: true });
     for (const n of this.npcs) n.view.destroy({ children: true });
+    for (const s of this.staff) s.view.destroy({ children: true });
   }
 }

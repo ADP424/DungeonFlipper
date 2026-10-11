@@ -1,9 +1,9 @@
 import { Application, Container, Graphics, Text, Sprite } from 'pixi.js';
 import {
   AWAY_SLEEP_HEAL_FRACTION, CELL_H, CELL_W, HealthStack, MIDNIGHT_MINUTE, CLOCK_STEP, MINUTES_PER_SECOND, PASS_OUT_MINUTE, Rng,
-  TILE_PX, addToHotbar, advanceClock, canHold, countLeft, createItem, entryPoint, expandRoom, footprint,
+  TILE_PX, addToHotbar, advanceClock, angleDiff, canHold, countLeft, createItem, entryPoint, expandRoom, footprint, turnPoint,
   APARTMENT_FLOOR, BARRICADE_TIERS, RoomLayout, barricadeKit, areaRooms, formatTime, partnerDoor, securityNeeds, generateFloor, getClock,
-  getInbox, registerAllResolvers, UTILITY_KINDS, fixtureSupplied, utilityNets, type UtilityKind, type UtilityNets, stairsDownRooms, structuralWallTarget, findSign, getTenants, unitAt,
+  getInbox, registerAllResolvers, cellCenter, getRealtors, guardsFor, realtorOf, realtorRooms, stanceOf, inward, REP_REALTOR, RELATION, listingProblem, getStaff, householdSize, type StaffRole, UTILITY_KINDS, fixtureSupplied, utilityNets, type UtilityKind, type UtilityNets, stairsDownRooms, structuralWallTarget, findSign, getTenants, unitAt,
   type Barricade, isOwned, isOwnedBy, isSecure, itemDef, registry, rollLoot, tileKey, uid, wakeTime,
   type Command, type FurniturePlacement, type HealthLayer, type Hotbar, type ItemInstance, type LightDef,
   type MonsterRecord, type PhoneMessage, type Tenant,
@@ -11,18 +11,23 @@ import {
 import { Input } from '../engine/input';
 import { Lighting, type LightInstance } from '../render/Lighting';
 import { ACTOR_HEIGHT, ShadowMaps, type ShadowBlob } from '../render/Shadows';
+import { furnitureDepth, tabletopLift } from '../render/RoomRenderer';
 import { effects } from './actions/effects';
 import { furnitureUses } from './actions/furnitureUses';
 import type { ToolAction } from './actions/tools';
 import { triggers } from './actions/triggers';
 import { Enemy } from './entities/Enemy';
 import { GroundItemEntity } from './entities/GroundItemEntity';
+import { artPixel, type Actor } from './entities/Entity';
 import { Player } from './entities/Player';
 import { TenantNpc } from './entities/TenantNpc';
+import { StaffNpc } from './entities/StaffNpc';
 import { Projectile, type ProjectileInit } from './entities/Projectile';
+import { Puddle } from './entities/Puddle';
 import { AreaRuntime } from './AreaRuntime';
 import type { Session } from './Session';
 import { Ui } from '../ui/Ui';
+import { setPixelUnit } from '../ui/pixels';
 import { settings } from '../settings';
 
 const STEP = 1 / 60;
@@ -34,14 +39,25 @@ const SLEEP_HOLD = 1.2;
 
 /** A monster spawning closer than this to the player is moved away... */
 const SPAWN_CLEARANCE = 4;
+/** Seconds a called elevator waits with its doors open. */
+const ELEVATOR_WAIT = 10;
 /** ...to open floor at least this far from them. */
 const SPAWN_AWAY = 7;
+/** Share of a hit's knockback that still gets through a shield. */
+const BLOCKED_KNOCKBACK = 0.25;
 
 interface Fx { view: Container; life: number; update(dt: number): void }
 
 /** How the player fell asleep: in a bed, on the floor (phone), forced at midnight, or passed out at 2 AM. */
 type SleepKind = 'bed' | 'floor' | 'collapse' | 'passOut';
 interface SleepState { kind: SleepKind; homeBed: boolean; t: number; applied: boolean }
+
+/**
+ * The least the screen shows, in art pixels: one cell (the default room, 240×144) with a 40-pixel HUD
+ * column either side, and room for the hotbar's height. A 16:9 screen shows exactly 320×180.
+ */
+const VIEW_W = CELL_W * TILE_PX + 2 * 40;
+const VIEW_H = 160;
 
 export class Game {
   readonly input: Input;
@@ -75,6 +91,8 @@ export class Game {
   private netsKey = '';
   /** Pipe / wire x-ray (over the lighting) and fault symptoms (puddles, sparks; under it). */
   private readonly xray = new Graphics();
+  /** The called elevator's open doors (in the entity layer, just in front of the elevator). */
+  private readonly elevatorFx = new Graphics();
   private readonly symptoms = new Graphics();
   private xrayKey = '';
   /** The crack fires on contact once you've been away from it (see `checkPortal`). */
@@ -93,6 +111,7 @@ export class Game {
     this.input = new Input(app.canvas);
     this.entityLayer.sortableChildren = true;
     this.world.addChild(this.floorLayer, this.symptoms, this.wallLayer, this.entityLayer, this.fxLayer);
+    this.entityLayer.addChild(this.elevatorFx);
     this.lighting = new Lighting(app.screen.width, app.screen.height);
     app.stage.addChild(this.world, this.lighting.overlay, this.overWorld);
     this.player = new Player(this);
@@ -129,22 +148,31 @@ export class Game {
 
   private screenW = 0;
   private screenH = 0;
+  /** Device pixels per art pixel: a whole number, so every art pixel is the same size on screen. */
+  private pixelScale = 1;
+  private dpr = 1;
 
   /**
    * Called every frame: Pixi applies `resizeTo` changes a frame after the window's resize event,
    * so polling the actual screen size is the only reliable way to stay in sync.
    */
   private resize(): void {
+    // Render at the display's real pixel density (it changes with browser zoom or another monitor).
+    const dpr = window.devicePixelRatio || 1;
+    if (dpr !== this.app.renderer.resolution) this.app.renderer.resize(window.innerWidth, window.innerHeight, dpr);
     const w = this.app.screen.width, h = this.app.screen.height;
-    if (w === this.screenW && h === this.screenH) return;
+    if (w === this.screenW && h === this.screenH && dpr === this.dpr) return;
     this.screenW = w;
     this.screenH = h;
-    // Fit one cell (the default room) to the screen, keeping it clear of the right-hand hotbar
-    // (mirrored on the left so the room stays centred). The HUD scales with `--u` (styles.css).
-    const u = Math.min(window.innerHeight, window.innerWidth * 0.5625) / 720;
-    const hudMargin = 84 * u;
-    this.scale = Math.max(1, Math.min((w - 2 * hudMargin) / (CELL_W * TILE_PX), h / (CELL_H * TILE_PX)));
-    this.lighting.resize(w / this.scale, h / this.scale);
+    this.dpr = dpr;
+    // Whole device pixels per art pixel, the largest that shows at least VIEW_W×VIEW_H art pixels: a
+    // room with a HUD column either side. `scale` is in CSS pixels; the UI uses the same unit (--p).
+    const fit = Math.min(w / VIEW_W, h / VIEW_H);
+    this.pixelScale = Math.max(1, Math.floor(fit * dpr + 1e-6));
+    this.scale = this.pixelScale / dpr;
+    setPixelUnit(this.scale);
+    // One art pixel more than the screen: the light map sits up to a pixel off its corner.
+    this.lighting.resize(w / this.scale + 1, h / this.scale + 1);
   }
 
   mouseWorld(): { x: number; y: number } {
@@ -175,7 +203,8 @@ export class Game {
     const viewW = this.app.screen.width / this.scale, viewH = this.app.screen.height / this.scale;
     const b = this.room.layout.fullBounds();
     const rx = b.x * TILE_PX, ry = b.y * TILE_PX, rw = b.w * TILE_PX, rh = b.h * TILE_PX;
-    const px = this.player.x * TILE_PX, py = this.player.y * TILE_PX;
+    // Follow the player where they're drawn (a whole art pixel), so they stay put on a scrolling screen.
+    const px = artPixel(this.player.x), py = artPixel(this.player.y);
     this.cam.x = rw <= viewW ? rx + rw / 2 - viewW / 2 : Math.max(rx, Math.min(rx + rw - viewW, px - viewW / 2));
     this.cam.y = rh <= viewH ? ry + rh / 2 - viewH / 2 : Math.max(ry, Math.min(ry + rh - viewH, py - viewH / 2));
   }
@@ -191,25 +220,32 @@ export class Game {
     }
     for (const c of [this.world, this.overWorld]) {
       c.scale.set(this.scale);
-      c.position.set(Math.round((-this.cam.x + sx) * this.scale), Math.round((-this.cam.y + sy) * this.scale));
+      // Snapped to whole device pixels, so the art grid lines up with the screen's.
+      c.position.set(Math.round((-this.cam.x + sx) * this.pixelScale) / this.dpr, Math.round((-this.cam.y + sy) * this.pixelScale) / this.dpr);
     }
     this.player.syncView();
     this.drawUtilities();
+    this.drawElevator();
     for (const e of this.room.enemies) e.syncView();
     for (const p of this.room.projectiles) p.syncView();
+    for (const p of this.room.puddles) p.syncView();
     for (const i of this.room.items) i.syncView();
     for (const n of this.room.npcs) n.syncView();
+    for (const s of this.room.staff) s.syncView();
+    // The light map is drawn from a whole-pixel camera and laid over the world on its pixel grid, so
+    // each art pixel takes one light value (shadow edges and lit sprites line up with the art).
+    const lx = Math.floor(this.cam.x - sx), ly = Math.floor(this.cam.y - sy);
     this.lighting.render(
-      this.app.renderer, this.cam.x - sx, this.cam.y - sy, this.scale, this.collectLights(),
+      this.app.renderer, lx, ly, this.scale, this.collectLights(),
       this.room.owned ? AMBIENT_OWNED : AMBIENT_DUNGEON, dt, this.shadows, this.shadowBlobs(),
     );
+    this.lighting.overlay.position.set(this.world.x + lx * this.scale, this.world.y + ly * this.scale);
     this.ui.update();
   }
 
   private collectLights(): LightInstance[] {
     const out: LightInstance[] = [...this.staticLights];
-    const add = (x: number, y: number, def: LightDef | undefined, seed?: number) => def && out.push({ x, y, def, seed });
-    add(this.player.x, this.player.y, this.player.light, 1);
+    const add = (x: number, y: number, def: LightDef | undefined, seed?: number, self?: LightInstance['self']) => def && out.push({ x, y, def, seed, self });
     const main = this.session.player.hotbar.main;
     if (main) {
       const d = itemDef(main);
@@ -219,20 +255,32 @@ export class Game {
     for (const p of this.room.projectiles) add(p.x, p.y - p.z, p.light, p.id);
     for (const f of this.room.layout.furniture()) {
       const def = registry.furniture.get(f.defId);
-      if (def.light && this.supplied(f)) add(f.x + footprint(def, f.rot).w / 2, f.y + 0.4, def.light, f.x * 31 + f.y);
+      if (!def.light || !this.supplied(f)) continue;
+      // The light sits at its `at` (turned with the piece); its own piece never shades it (a piece on
+      // a tabletop is drawn lifted by the table's top).
+      const { w, h } = footprint(def, f.rot);
+      const W = def.size.w * TILE_PX, H = def.size.h * TILE_PX;
+      const at = turnPoint(def.light.at ?? { x: W / 2, y: 0.4 * TILE_PX }, W, H, f.rot);
+      const lift = tabletopLift(this.room.layout.onTopOf(f)) / TILE_PX;
+      add(f.x + at.x / TILE_PX, f.y + at.y / TILE_PX, def.light, f.x * 31 + f.y, { x: f.x, y: f.y - lift, w, h });
     }
     return out;
   }
 
-  /** Moving things that cast shadows: the player and visible enemies. */
+  /**
+   * Moving things that cast shadows: the player and visible enemies, where their views are drawn (so
+   * after `syncView`), which is what keeps the shadow maps' silhouettes exactly under the sprites.
+   */
   private shadowBlobs(): ShadowBlob[] {
     const out: ShadowBlob[] = [];
-    const shape = (a: { spriteKey: string; sprite: Sprite }) => ({ key: a.spriteKey, dy: a.sprite.y, sx: a.sprite.scale.x, sy: a.sprite.scale.y });
-    if (this.player.view.visible) out.push({ x: this.player.x, y: this.player.y, r: this.player.radius, h: ACTOR_HEIGHT, ...shape(this.player) });
+    const part = (key: string, s: Sprite) => ({ key, dy: s.y, sx: s.scale.x, sy: s.scale.y });
+    const add = (a: Actor, h: number, sprites: ShadowBlob['sprites']) => out.push({ x: a.view.x / TILE_PX, y: a.view.y / TILE_PX, h, sprites });
+    const p = this.player;
+    if (p.view.visible) add(p, ACTOR_HEIGHT, [part(p.spriteKey, p.sprite), part(p.headKey, p.head)]);
     for (const e of this.room.enemies) {
-      if (!e.dead && e.alpha > 0.2) out.push({ x: e.x, y: e.y, r: e.radius, h: ACTOR_HEIGHT * (e.def.scale ?? 1), ...shape(e) });
+      if (!e.dead && e.alpha > 0.2) add(e, ACTOR_HEIGHT * (e.sprite.texture.height / TILE_PX), [part(e.spriteKey, e.sprite)]);
     }
-    for (const n of this.room.npcs) out.push({ x: n.x, y: n.y, r: n.radius, h: ACTOR_HEIGHT, ...shape(n) });
+    for (const n of [...this.room.npcs, ...this.room.staff]) add(n, ACTOR_HEIGHT, [part(n.spriteKey, n.sprite)]);
     return out;
   }
 
@@ -278,13 +326,19 @@ export class Game {
     for (const e of room.enemies) if (!e.dead) e.update(this, dt);
     this.separateEnemies();
     this.updateProjectiles(dt);
+    for (const p of this.room.puddles) p.update(dt);
     this.updateItems(dt);
     this.updateNpcs(dt);
     this.updateFx(dt);
     this.cleanup();
     this.checkRoomClear();
     this.checkPortal();
+    this.checkElevator();
     this.checkTransitions();
+    if (this.areaDirty) {
+      this.areaDirty = false;
+      this.reloadArea();
+    }
   }
 
   /**
@@ -329,12 +383,10 @@ export class Game {
         const min = a.radius + b.radius;
         if (d > 0 && d < min) {
           const push = (min - d) / 2 * 0.5;
-          const blockedA = this.room.blockerFor(a.movementKind, 'enemy');
-          const blockedB = this.room.blockerFor(b.movementKind, 'enemy');
           const ax = a.x - (dx / d) * push, ay = a.y - (dy / d) * push;
           const bx = b.x + (dx / d) * push, by = b.y + (dy / d) * push;
-          if (!blockedA(Math.floor(ax), Math.floor(ay))) { a.x = ax; a.y = ay; }
-          if (!blockedB(Math.floor(bx), Math.floor(by))) { b.x = bx; b.y = by; }
+          if (!this.room.blockedAt(ax, ay, a.movementKind, 'enemy')) { a.x = ax; a.y = ay; }
+          if (!this.room.blockedAt(bx, by, b.movementKind, 'enemy')) { b.x = bx; b.y = by; }
         }
       }
     }
@@ -353,6 +405,7 @@ export class Game {
         if (t >= 1) this.impact(p);
         continue;
       }
+      if (p.def.homing) this.home(p, dt);
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       if (p.age > p.def.lifetime || this.room.projectileBlocked(p.x, p.y, 'straight')) {
@@ -363,14 +416,32 @@ export class Game {
     }
   }
 
+  /** Curve a homing projectile toward its target: the player, for the enemies' ones. */
+  private home(p: Projectile, dt: number): void {
+    if (p.team !== 'enemy') return;
+    const speed = Math.hypot(p.vx, p.vy);
+    const want = Math.atan2(this.player.y - p.y, this.player.x - p.x);
+    const turn = Math.max(-p.def.homing! * dt, Math.min(p.def.homing! * dt, angleDiff(want, Math.atan2(p.vy, p.vx))));
+    const a = Math.atan2(p.vy, p.vx) + turn;
+    p.vx = Math.cos(a) * speed;
+    p.vy = Math.sin(a) * speed;
+  }
+
+  /** A melee swing knocks a projectile out of the air. */
+  swatProjectile(p: Projectile): void {
+    p.dead = true;
+    this.burst(p.x, p.y, 0xe0e0e0, 5);
+  }
+
   private projectileHits(p: Projectile): void {
     if (p.team === 'player') {
       for (const e of this.room.enemies) {
-        if (e.dead || p.hit.has(e.id) || e.alpha < 0.5) continue;
+        if (!e.targetable || p.hit.has(e.id)) continue;
         if (Math.hypot(e.x - p.x, e.y - p.y) < e.radius + p.radius) {
           p.hit.add(e.id);
           if (p.def.splash) { this.impact(p); return; }
           const l = Math.hypot(p.vx, p.vy) || 1;
+          this.player.interruptWork();
           this.damageEnemy(e, p.damage, p.vx / l, p.vy / l, p.knockback);
           if (p.pierceLeft-- <= 0) { this.impact(p, true); return; }
         }
@@ -391,7 +462,7 @@ export class Game {
     if (splash) {
       if (p.team === 'player') {
         for (const e of this.room.enemies) {
-          if (e.dead || e.alpha < 0.5) continue;
+          if (!e.targetable) continue;
           const d = Math.hypot(e.x - p.x, e.y - p.y);
           if (d < splash + e.radius) this.damageEnemy(e, p.damage, (e.x - p.x) / (d || 1), (e.y - p.y) / (d || 1), p.knockback);
         }
@@ -399,6 +470,12 @@ export class Game {
         this.hurtPlayer(p.damage, p.x, p.y);
       }
       this.ring(p.x, p.y, splash, p.def.light?.color ?? 0x80c060);
+    }
+    const leaves = p.def.leaves;
+    if (leaves && this.room.layout.isOpenFloor(Math.floor(p.x), Math.floor(p.y))) {
+      const puddle = new Puddle(leaves, p.x, p.y);
+      this.room.puddles.push(puddle);
+      this.entityLayer.addChild(puddle.view);
     }
     if (!quiet || splash) this.burst(p.x, p.y, p.def.light?.color ?? 0xd0d0d0, splash ? 10 : 4);
   }
@@ -425,15 +502,6 @@ export class Game {
       if (!fx || !fx(this, def.effect.params ?? {}, inst)) return;
       this.removeGroundItem(it);
       if (def.id === 'cash') this.floatText(it.x, it.y, `+${inst.data.amount ?? 1}`, 0xffd34a);
-      return;
-    }
-    if (def.kind === 'passive') {
-      const passives = [...this.session.player.passives, def.id];
-      this.dispatch({ type: 'playerUpdated', playerId: this.session.playerId, patch: { passives } });
-      this.player.refreshStats();
-      for (const ef of def.effects ?? []) effects[ef.id]?.(this, ef.params ?? {}, inst);
-      this.removeGroundItem(it);
-      this.ui.announce(def.name, def.description);
       return;
     }
     const hb = structuredClone(this.session.player.hotbar);
@@ -474,7 +542,7 @@ export class Game {
 
   private cleanup(): void {
     const r = this.room;
-    for (const list of [r.enemies, r.projectiles, r.items] as Array<Array<Enemy | Projectile | GroundItemEntity>>) {
+    for (const list of [r.enemies, r.projectiles, r.puddles, r.items] as Array<Array<Enemy | Projectile | Puddle | GroundItemEntity>>) {
       for (let i = list.length - 1; i >= 0; i--) {
         if (list[i]!.dead) {
           list[i]!.view.destroy({ children: true });
@@ -514,13 +582,19 @@ export class Game {
   }
 
   /** Rebuild the area around the player in place (the estate changed shape). No time passes. */
+  /** A passive realtor under the cursor (click to talk). */
+  realtorUnderCursor(): Enemy | undefined {
+    const m = this.mouseWorld();
+    return this.room.enemies.find((e) => !e.dead && e.passive && e.def.id === 'realtor' && Math.hypot(e.x - m.x, e.y - 0.3 - m.y) < 0.6);
+  }
+
   private reloadArea(): void {
     this.loadRoom(this.room.currentId, false);
   }
 
   /**
    * Knock through the structural wall at (x, y) and its twin across the wall line, between any two
-   * rooms (see `structuralWallTarget`); costs the heavy tool 2 uses. The rooms become one area.
+   * rooms (see `structuralWallTarget`); costs the heavy tool 1 use. The rooms become one area.
    */
   demolishWall(x: number, y: number): void {
     const st = this.session.state;
@@ -532,7 +606,7 @@ export class Game {
     const expansion = expandRoom(st.floors[this.floorIndex]!, st.seed, other.roomId);
     if (expansion) this.dispatch({ type: 'roomsGenerated', floor: this.floorIndex, infos: expansion.infos, states: expansion.states });
     const hb = structuredClone(this.session.player.hotbar);
-    if (hb.main) hb.main.data.count = Math.max(0, countLeft(hb.main) - 2);
+    if (hb.main) hb.main.data.count = Math.max(0, countLeft(hb.main) - 1);
     this.setHotbar(hb);
     this.dispatch({ type: 'tileSet', roomId: id, x, y, obstacle: null });
     this.dispatch({ type: 'tileSet', roomId: other.roomId, x: other.x, y: other.y, obstacle: null });
@@ -601,7 +675,7 @@ export class Game {
         const spot = away.length ? away[Math.floor(Math.random() * away.length)]! : null;
         if (spot) ({ x, y } = spot);
       }
-      const e = this.addEnemy(new Enemy(record.defId, x, y, { monsterId: record.id, hpFrac: record.hpFrac, hpMul: record.hpMul }));
+      const e = this.addEnemy(new Enemy(record.defId, x, y, { monsterId: record.id, hpFrac: record.hpFrac }));
       e.roomId = id;
       if (announce) this.burst(x, y, 0x40302a, 10);
     }
@@ -665,21 +739,164 @@ export class Game {
     }
     const npcs = this.room.npcs;
     for (let i = npcs.length - 1; i >= 0; i--) {
-      if (want.has(npcs[i]!.tenantId)) continue;
+      const w = want.get(npcs[i]!.tenantId);
+      if (w && npcs[i]!.member < householdSize(w.t)) continue;
       npcs[i]!.view.destroy({ children: true });
       npcs.splice(i, 1);
     }
     for (const w of want.values()) {
-      if (npcs.some((n) => n.tenantId === w.t.id)) continue;
       const unit = unitAt(st, this.floorIndex, w.x, w.y);
-      const spot = this.room.layout.nearestOpenFloor(w.x + 0.5, w.y + 1.5) ?? { x: w.x, y: w.y + 1 };
-      const npc = new TenantNpc(w.t, spot.x + 0.5, spot.y + 0.5, unit ? [...unit.tiles] : []);
-      npc.roomId = w.roomId;
-      const bed = unit?.furniture.find((f) => registry.furniture.tryGet(f.f.defId)?.tags?.includes('bed'));
-      const rest = bed && this.room.layout.nearestOpenFloor(bed.f.x + 0.5, bed.f.y + 0.5);
-      npc.bedSpot = rest ? { x: rest.x + 0.5, y: rest.y + 0.5 } : null;
-      npcs.push(npc);
+      const beds = unit?.furniture.filter((f) => registry.furniture.tryGet(f.f.defId)?.tags?.includes('bed')) ?? [];
+      // The whole household: everyone gets a body, and a bed to stand by at night.
+      for (let m = 0; m < householdSize(w.t); m++) {
+        if (npcs.some((n) => n.tenantId === w.t.id && n.member === m)) continue;
+        const spot = this.room.layout.nearestOpenFloor(w.x + 0.5 + m * 0.7, w.y + 1.5) ?? { x: w.x, y: w.y + 1 };
+        const npc = new TenantNpc(w.t, spot.x + 0.5, spot.y + 0.5, unit ? [...unit.tiles] : [], m);
+        npc.roomId = w.roomId;
+        const bed = beds[m % Math.max(1, beds.length)];
+        const rest = bed && this.room.layout.nearestOpenFloor(bed.f.x + 0.5, bed.f.y + 0.5);
+        npc.bedSpot = rest ? { x: rest.x + 0.5, y: rest.y + 0.5 } : null;
+        npcs.push(npc);
+        this.entityLayer.addChild(npc.view);
+      }
+    }
+    this.syncStaff();
+    this.syncRealtors();
+  }
+
+  /**
+   * Realtors' people, live (P8): each realtor (and their guards) in their office while it's on
+   * screen, passive until provoked; and the thugs of a raid on one of your rooms that's on screen.
+   */
+  private syncRealtors(): void {
+    const st = this.session.state;
+    const active = new Set(this.room.layout.activeIds);
+    const realtors = getRealtors(st);
+    const live = (pred: (e: Enemy) => boolean) => this.room.enemies.filter((e) => !e.dead && pred(e));
+    for (const r of Object.values(realtors)) {
+      if (r.floor !== this.floorIndex) continue;
+      if (active.has(r.officeRoomId) && !live((e) => e.realtorId === r.id).length) {
+        const info = this.room.layout.layouts.get(r.officeRoomId)!.info;
+        const c = info.cells[0]!;
+        const guards = guardsFor(realtorRooms(st, r.id).length);
+        for (let i = 0; i <= guards; i++) {
+          const spot = this.room.layout.nearestOpenFloor(cellCenter(c).x + 0.5 + (i ? (i % 2 ? -2 : 2) : 0), cellCenter(c).y + 0.5);
+          if (!spot) continue;
+          const e = this.addEnemy(new Enemy(i ? 'realtor_guard' : 'realtor', spot.x + 0.5, spot.y + 0.5));
+          e.roomId = r.officeRoomId;
+          e.realtorId = r.id;
+          e.passive = !this.provoked.has(r.id);
+        }
+      }
+      const raid = r.raid;
+      if (raid && active.has(raid.roomId)) {
+        const have = live((e) => e.raidOf === r.id).length;
+        const info = this.room.layout.layouts.get(raid.roomId)!.info;
+        for (let i = have; i < raid.thugs; i++) {
+          const d = info.doors[i % Math.max(1, info.doors.length)];
+          const near = d ? { x: d.x + 0.5 + inward(d.dir)[0] * 2, y: d.y + 0.5 + inward(d.dir)[1] * 2 } : { x: cellCenter(info.cells[0]!).x + 0.5, y: cellCenter(info.cells[0]!).y + 0.5 };
+          const spot = this.room.layout.nearestOpenFloor(near.x, near.y);
+          if (!spot) continue;
+          const e = this.addEnemy(new Enemy('thug', spot.x + 0.5, spot.y + 0.5));
+          e.roomId = raid.roomId;
+          e.raidOf = r.id;
+          this.burst(spot.x + 0.5, spot.y + 0.5, 0x803030, 8);
+        }
+      }
+    }
+    // People whose realtor is gone, or whose raid is over, leave.
+    for (const e of this.room.enemies) {
+      if (e.dead) continue;
+      if ((e.realtorId && !realtors[e.realtorId]) || (e.raidOf && !realtors[e.raidOf]?.raid)) {
+        e.dead = true;
+        e.view.visible = false;
+      }
+    }
+  }
+
+  /** Realtors whose people you've attacked or robbed (their office turns on you while you're here). */
+  private provoked = new Set<string>();
+
+  /** You attacked or robbed a realtor's people: the office turns on you, they turn hostile, word gets around. */
+  provokeRealtor(id: string, why: 'assault' | 'theft'): void {
+    const r = getRealtors(this.session.state)[id];
+    if (!r) return;
+    const first = !this.provoked.has(id);
+    this.provoked.add(id);
+    for (const e of this.room.enemies) if (e.realtorId === id) e.passive = false;
+    if (why === 'theft') {
+      this.dispatch({ type: 'reputationAdded', playerId: this.session.playerId, delta: REP_REALTOR.theft });
+      this.dispatch({ type: 'realtorSet', realtor: { ...r, relation: Math.max(-100, r.relation + RELATION.robbed) } });
+      this.toast(`That's ${r.name}'s! Their people saw you.`, 'theft');
+    } else if (first) {
+      this.dispatch({ type: 'reputationAdded', playerId: this.session.playerId, delta: REP_REALTOR.assault });
+      this.dispatch({ type: 'realtorSet', realtor: { ...r, relation: Math.min(r.relation, RELATION.attacked) } });
+      this.notify('warn', `You attacked ${r.name}'s people. They won't forget it.`);
+    }
+  }
+
+  /** A realtor is dead: their rooms are nobody's, and your reputation is in tatters. */
+  private realtorKilled(id: string): void {
+    const st = this.session.state;
+    const r = getRealtors(st)[id];
+    if (!r) return;
+    for (const roomId of realtorRooms(st, id)) {
+      for (const f of st.rooms[roomId]!.furniture) if (registry.furniture.tryGet(f.defId)?.claimsRoom) this.dispatch({ type: 'furnitureRemoved', roomId, uid: f.uid });
+      this.dispatch({ type: 'roomOwnerCleared', roomId });
+    }
+    this.dispatch({ type: 'realtorRemoved', id });
+    this.dispatch({ type: 'reputationAdded', playerId: this.session.playerId, delta: REP_REALTOR.killed });
+    this.notify('urgent', `You killed ${r.name}. Their rooms are up for grabs, but nobody decent will want to rent from you for a long while.`);
+    this.provoked.delete(id);
+    this.refreshArea();
+  }
+
+  /**
+   * Rebuild the area after rooms changed hands (trades, deaths). Deferred to the end of the step: it
+   * destroys every live entity, and this is often called from inside a loop over them (combat).
+   */
+  refreshArea(): void {
+    this.areaDirty = true;
+  }
+  private areaDirty = false;
+
+  /** Staff looking after this floor are around whenever you're in your property here. */
+  private syncStaff(): void {
+    const st = this.session.state;
+    const mine = this.room.layout.activeIds.filter((id) => st.rooms[id]?.ownerId === this.session.playerId);
+    const want = mine.length ? Object.values(getStaff(st)).filter((s) => s.floor === this.floorIndex) : [];
+    const list = this.room.staff;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (want.some((s) => s.id === list[i]!.staffId)) continue;
+      list[i]!.view.destroy({ children: true });
+      list.splice(i, 1);
+    }
+    want.forEach((s, i) => {
+      if (list.some((n) => n.staffId === s.id)) return;
+      const c = this.room.layout.layouts.get(mine[i % mine.length]!)!.info.cells[0]!;
+      const spot = this.room.layout.nearestOpenFloor(cellCenter(c).x + 0.5, cellCenter(c).y + 0.5);
+      if (!spot) return;
+      const npc = new StaffNpc(s, spot.x + 0.5, spot.y + 0.5);
+      npc.roomId = mine[0]!;
+      list.push(npc);
       this.entityLayer.addChild(npc.view);
+    });
+  }
+
+  /** A member of staff finished a job on the spot. */
+  staffDidJob(role: StaffRole, roomId: string, x: number, y: number): void {
+    const room = this.session.state.rooms[roomId];
+    if (!room) return;
+    if (role === 'cleaner') {
+      if (!room.mess?.[tileKey(x, y)]) return;
+      this.dispatch({ type: 'messCleared', roomId, x, y });
+      this.burst(x + 0.5, y + 0.5, 0xc8e8ff, 6);
+    } else {
+      for (const kind of UTILITY_KINDS) {
+        if (!room.utilities?.[tileKey(x, y)]?.[kind]?.fault) continue;
+        this.dispatch({ type: 'utilityFault', roomId, x, y, kind, fault: false });
+        this.burst(x + 0.5, y + 0.5, kind === 'power' ? 0xffd040 : 0x60a0ff, 8);
+      }
     }
   }
 
@@ -687,6 +904,7 @@ export class Game {
     const night = getClock(this.session.state).minute >= 22 * 60;
     const tenants = getTenants(this.session.state);
     for (const n of this.room.npcs) n.update(this, dt, night && tenants[n.tenantId]?.status === 'living' ? n.bedSpot : null);
+    for (const s of this.room.staff) s.update(this, dt);
   }
 
   /** A tenant or applicant under the cursor. */
@@ -712,7 +930,9 @@ export class Game {
     if (!at) return;
     const closed = !(at.f.data?.closed === true);
     this.dispatch({ type: 'furnitureUpdated', roomId: at.room.info.id, placement: { ...at.f, data: { ...at.f.data, closed } } });
-    this.toast(closed ? 'Listing closed' : 'Listing open');
+    if (closed) return this.toast('Listing closed');
+    const problem = listingProblem(this.session.state, this.floorIndex, uidOf);
+    this.toast(problem ? `Listing open, but nobody will come: ${problem}.` : 'Listing open. Expect an applicant after the next night.', 'listing');
   }
 
   /** A room leaves the active set: its monsters' wounds are saved and its live entities go away. */
@@ -894,10 +1114,53 @@ export class Game {
       .sort((a, b) => a - b);
   }
 
-  /** Ride the elevator to another floor's lobby. */
-  rideElevator(target: number): void {
+  /**
+   * A floor was picked on the elevator: its doors open, and walking in (carrying whatever you hold)
+   * takes you there. They close again after ELEVATOR_WAIT seconds.
+   */
+  callElevator(uid: string, target: number): void {
     if (target === this.floorIndex || !this.elevatorFloors().includes(target)) return;
-    this.arriveAtLobby(target, 'elevator', `Level ${target}`, 'Ding.');
+    this.elevatorCall = { uid, target, until: this.time + ELEVATOR_WAIT };
+    this.toast(`Ding. The doors open: step in to go to Level ${target}.`, 'elevator');
+  }
+
+  private elevatorCall: { uid: string; target: number; until: number } | null = null;
+
+  /** Open doors: walk into them to ride; they shut by themselves after a while. */
+  private checkElevator(): void {
+    const call = this.elevatorCall;
+    if (!call) return;
+    const f = this.room.layout.findFurniture(call.uid)?.f;
+    if (!f || this.time > call.until) {
+      this.elevatorCall = null;
+      if (f) this.toast('The elevator doors slide shut.', 'elevator');
+      return;
+    }
+    const mv = this.input.moveVector();
+    const pl = this.player;
+    const { w, h } = footprint(registry.furniture.get(f.defId), f.rot);
+    const cx = Math.max(f.x, Math.min(f.x + w, pl.x)), cy = Math.max(f.y, Math.min(f.y + h, pl.y));
+    const dx = cx - pl.x, dy = cy - pl.y;
+    if (Math.hypot(dx, dy) > pl.radius + 0.08 || dx * mv.x + dy * mv.y <= 0) return;
+    this.elevatorCall = null;
+    this.arriveAtLobby(call.target, 'elevator', `Level ${call.target}`, 'Ding.');
+  }
+
+  /** The called elevator's doors, drawn open (parted panels, light spilling out). */
+  private drawElevator(): void {
+    const g = this.elevatorFx.clear();
+    const f = this.elevatorCall && this.room.layout.findFurniture(this.elevatorCall.uid)?.f;
+    if (!f) return;
+    const T = TILE_PX, x = f.x * T, y = f.y * T;
+    const left = this.elevatorCall!.until - this.time;
+    // Doors part over the first half second and close over the last.
+    const open = Math.min(1, (ELEVATOR_WAIT - left) / 0.5, left / 0.5);
+    const gap = 10 * Math.max(0, open);
+    g.rect(x + 2, y + 3, 12, 13).fill({ color: 0xffe8b0 });
+    g.rect(x + 2, y + 3, 6 - gap / 2, 13).fill({ color: 0xb4bac6 });
+    g.rect(x + 8 + gap / 2, y + 3, 6 - gap / 2, 13).fill({ color: 0xb4bac6 });
+    g.rect(x + 7, y + 1, 2, 1).fill({ color: 0x80ff80 });
+    g.zIndex = furnitureDepth(f) + 0.01;
   }
 
   /** Step through the crack: apartment ↔ Level 1's lobby. */
@@ -1091,8 +1354,7 @@ export class Game {
   }
 
   spawnEnemy(defId: string, x: number, y: number): Enemy | null {
-    const blocked = this.room.blockerFor(registry.enemies.get(defId).movementKind, 'enemy');
-    if (blocked(Math.floor(x), Math.floor(y))) return null;
+    if (this.room.blockedAt(x, y, registry.enemies.get(defId).movementKind, 'enemy')) return null;
     const e = this.addEnemy(new Enemy(defId, x, y));
     this.burst(x, y, 0xe8e2d0, 8);
     return e;
@@ -1107,9 +1369,17 @@ export class Game {
 
   damageEnemy(e: Enemy, dmg: number, dirX: number, dirY: number, knockback: number): void {
     if (e.dead) return;
+    if (e.realtorId && e.passive) this.provokeRealtor(e.realtorId, 'assault');
+    const kb = knockback * (1 - (e.def.knockbackResist ?? 0));
+    if (e.blocks(dirX, dirY)) {
+      // Stopped by its shield: no harm done, and it barely budges.
+      e.kx += dirX * kb * BLOCKED_KNOCKBACK;
+      e.ky += dirY * kb * BLOCKED_KNOCKBACK;
+      this.burst(e.x - dirX * e.radius, e.y - dirY * e.radius, 0xd0d8e0, 5);
+      return;
+    }
     e.hp -= dmg;
     e.flash = 0.12;
-    const kb = knockback * (1 - (e.def.knockbackResist ?? 0));
     e.kx += dirX * kb;
     e.ky += dirY * kb;
     this.floatText(e.x, e.y - 0.6, String(Math.round(dmg * 10) / 10), 0xffffff);
@@ -1121,16 +1391,29 @@ export class Game {
     e.dead = true;
     this.burst(e.x, e.y, e.def.tint ?? 0xc04040, 12);
     if (e.monsterId) this.dispatch({ type: 'monsterKilled', roomId: e.roomId || this.room.currentId, monsterId: e.monsterId });
-    if (drops && e.def.lootTable) this.spawnLoot(e);
+    // Monsters die messily (on floor, wherever they fall).
+    const mx = Math.floor(e.x), my = Math.floor(e.y);
+    const messRoom = this.room.roomIdAt(mx, my);
+    if (messRoom && this.floorIndex !== APARTMENT_FLOOR && this.room.layout.isOpenFloor(mx, my)) this.dispatch({ type: 'messAdded', roomId: messRoom, x: mx, y: my });
+    if (drops && e.def.loot) this.spawnLoot(e);
+    if (e.realtorId && e.def.id === 'realtor') this.realtorKilled(e.realtorId);
+    if (e.raidOf) {
+      // One thug fewer; the last one down ends the raid.
+      const r = getRealtors(this.session.state)[e.raidOf];
+      if (r?.raid) {
+        const thugs = r.raid.thugs - 1;
+        this.dispatch({ type: 'realtorSet', realtor: { ...r, raid: thugs > 0 ? { ...r.raid, thugs } : undefined } });
+        if (thugs <= 0) this.notify('info', `You ran off ${r.name}'s thugs. Everything's still here.`);
+      }
+    }
     if (e.def.boss) {
       this.shake(0.6);
-      for (const x of this.room.enemies) if (!x.monsterId) this.killEnemy(x, false);
+      for (const x of this.room.enemies) if (x.summonedBy === e.id) this.killEnemy(x, false);
     }
   }
 
   private spawnLoot(e: Enemy): void {
-    const table = registry.lootTables.get(e.def.lootTable!);
-    for (const r of rollLoot(table, this.rng)) {
+    for (const r of rollLoot(e.def.loot!, this.rng)) {
       const inst = r.kind === 'cash' ? createItem('cash', uid(), { amount: r.amount }) : createItem(r.item);
       const pos = this.spillSpot(e.x, e.y);
       this.dropGroundItem(inst, pos.x, pos.y, { x: e.x, y: e.y });
@@ -1286,6 +1569,8 @@ export class Game {
   liftFurniture(f: FurniturePlacement): void {
     const at = this.room.layout.findFurniture(f.uid);
     if (!at || registry.furniture.get(f.defId).fixed) return;
+    const owner = realtorOf(this.session.state, at.room.info.id);
+    if (owner) this.provokeRealtor(owner.id, 'theft');
     this.dispatch({ type: 'furnitureRemoved', roomId: at.room.info.id, uid: f.uid });
     this.dispatch({ type: 'playerUpdated', playerId: this.session.playerId, patch: { carrying: structuredClone(f) } });
     this.furnitureChanged();
@@ -1356,8 +1641,14 @@ export class Game {
     const nets = this.utilityNetsNow();
     const active = new Set(this.room.layout.activeIds);
     const T = TILE_PX;
-    // Symptoms: redrawn every frame (sparks flicker).
+    // Symptoms: redrawn every frame (sparks flicker). Mess first, under them.
     const sym = this.symptoms.clear();
+    for (const id of active) {
+      for (const [k, level] of Object.entries(this.session.state.rooms[id]?.mess ?? {})) {
+        const [x, y] = k.split(',').map(Number) as [number, number];
+        drawMess(sym, x, y, level);
+      }
+    }
     for (const kind of UTILITY_KINDS) {
       for (const [k, s] of nets[kind].segments) {
         if (!s.fault || !active.has(s.roomId)) continue;
@@ -1443,6 +1734,9 @@ export class Game {
   setContainer(furnitureUid: string, contents: (ItemInstance | null)[]): void {
     const at = this.room.layout.findFurniture(furnitureUid);
     if (!at) return;
+    // Taking things out of a realtor's container is theft.
+    const owner = realtorOf(this.session.state, at.room.info.id);
+    if (owner && contents.filter(Boolean).length < (at.f.contents ?? []).filter(Boolean).length) this.provokeRealtor(owner.id, 'theft');
     this.dispatch({ type: 'furnitureUpdated', roomId: at.room.info.id, placement: { ...at.f, contents } });
   }
 
@@ -1588,5 +1882,22 @@ export class Game {
     if (i.keyPressed('shift+f10')) this.passTime(Math.max(0, 23 * 60 + 45 - getClock(this.session.state).minute));
     else if (i.keyPressed('f10')) this.passTime(60);
     if (i.keyPressed('f9') && confirm('Reset your world? This deletes all progress.')) this.session.resetWorld();
+  }
+}
+
+/** Rubbish on a floor tile: a few specks and scraps (more with the level), placed by the tile. */
+function drawMess(g: Graphics, x: number, y: number, level: number): void {
+  const T = TILE_PX;
+  let h = (x * 73856093) ^ (y * 19349663);
+  const rnd = () => {
+    h = (h * 1103515245 + 12345) & 0x7fffffff;
+    return h / 0x7fffffff;
+  };
+  if (level >= 3) g.ellipse((x + 0.5) * T, (y + 0.6) * T, T * 0.42, T * 0.26).fill({ color: 0x4a3a20, alpha: 0.35 });
+  const colors = [0x6a5a3a, 0x4a3a28, 0x9a8a60, 0x4a5a3a, 0xc8c0a8];
+  for (let i = 0; i < level * 3; i++) {
+    const px = (x + 0.15 + rnd() * 0.7) * T, py = (y + 0.2 + rnd() * 0.65) * T;
+    const w = 2 + Math.floor(rnd() * 3), hh = 1 + Math.floor(rnd() * 3);
+    g.rect(px, py, w, hh).fill({ color: colors[Math.floor(rnd() * colors.length)]!, alpha: 0.9 });
   }
 }

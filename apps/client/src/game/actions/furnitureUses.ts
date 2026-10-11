@@ -10,9 +10,10 @@ export const furnitureUses: Record<string, FurnitureUse> = {
   /** A For Rent sign: open or close the listing. */
   toggleListing: (game, f) => game.toggleListing(f.uid),
   /** Lobby elevator: pick a floor whose lobby you've reached. */
-  elevator: (game) => {
+  elevator: (game, f) => {
+    if (!game.supplied(f)) return game.toast('The elevator is dead. Run wire from it to a generator.');
     const floors = game.elevatorFloors();
     if (floors.length < 2) return game.toast('The buttons for other floors are dark. Find the stairs down first.');
-    game.ui.openElevator(floors, game.floorIndex, (f) => game.rideElevator(f));
+    game.ui.openElevator(floors, game.floorIndex, (target) => game.callElevator(f.uid, target));
   },
 };

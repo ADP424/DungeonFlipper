@@ -1,7 +1,7 @@
 import { Sprite } from 'pixi.js';
-import { TILE_PX, type ProjectileDef } from '@df/shared';
+import type { ProjectileDef } from '@df/shared';
 import { tex } from '../../engine/assets';
-import { Entity, type Team } from './Entity';
+import { Entity, artPixel, type Team } from './Entity';
 
 export interface ProjectileInit {
   def: ProjectileDef;
@@ -51,9 +51,8 @@ export class Projectile extends Entity {
       const d = Math.hypot(tx - init.x, ty - init.y);
       this.lob = { sx: init.x, sy: init.y, tx, ty, dur: Math.max(0.25, d / speed) };
     }
-    this.shadow = new Sprite(tex('proc:shadow'));
+    this.shadow = new Sprite(tex('fx/shadow_tiny'));
     this.shadow.anchor.set(0.5);
-    this.shadow.scale.set(0.5);
     this.shadow.visible = !!this.lob;
     this.sprite = new Sprite(tex(init.def.sprite));
     this.sprite.anchor.set(0.5);
@@ -63,7 +62,8 @@ export class Projectile extends Entity {
 
   override syncView(): void {
     super.syncView();
-    this.sprite.y = -this.z * TILE_PX - (this.lob ? 0 : 4);
+    this.sprite.y = -artPixel(this.z) - (this.lob ? 0 : 4);
+    if (this.def.orient && !this.lob) this.sprite.rotation = Math.atan2(this.vy, this.vx);
     this.view.zIndex = this.y + 0.5;
   }
 }

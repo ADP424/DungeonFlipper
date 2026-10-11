@@ -3,7 +3,7 @@ import type { ObstacleDef } from '../types';
 export default {
   id: 'concrete_wall',
   name: 'Concrete Wall',
-  sprite: 'td:40',
+  sprite: 'obstacles/concrete_wall',
   blocksMovement: ['walk', 'fly'],
   blocksProjectiles: ['straight', 'lobbed'],
   height: 'tall',
@@ -11,5 +11,5 @@ export default {
   material: 'stone',
   renovate: ['demolish'],
   connectGroup: 'wall',
-  autotile: { set: 'stone', joins: ['wall'] },
+  autotile: { set: 'concrete_wall', joins: ['wall'] },
 } satisfies ObstacleDef;

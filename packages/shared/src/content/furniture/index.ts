@@ -24,6 +24,8 @@ import waterMain from './water_main';
 import sink from './sink';
 import toilet from './toilet';
 import fridge from './fridge';
+import doubleBed from './double_bed';
+import realtorFlag from './realtor_flag';
 
 export default [
   chair,
@@ -51,4 +53,6 @@ export default [
   sink,
   toilet,
   fridge,
+  doubleBed,
+  realtorFlag,
 ] satisfies FurnitureDef[];

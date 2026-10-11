@@ -5,9 +5,10 @@ export default {
   id: 'portal',
   name: 'The Crack',
   size: { w: 1, h: 1 },
-  sprite: 'proc:portal',
+  sprite: 'furniture/portal',
   rotatable: false,
-  height: 1.8,
+  // A crack of light: it casts no shadow.
+  height: 0,
   blocksMovement: ['walk', 'fly'],
   blocksProjectiles: [],
   light: { radius: 3.5, color: 0xffe9a0, intensity: 0.7, flicker: 0.25, height: 1.2 },

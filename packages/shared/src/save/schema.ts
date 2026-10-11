@@ -1,14 +1,14 @@
 import type { FurniturePlacement, ItemInstance, PlayerState, RoomState, WorldState } from '../world/types';
 
 /** Bump when the persisted shape changes, and add a migration below. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 /**
  * Saves older than this can't be upgraded and are discarded (a new game starts). v7 renamed every
  * content id to the Backrooms theme; while the game is in development, saves are wiped between
  * roadmap phases rather than carried through migrations.
  */
-export const MIN_SAVE_VERSION = 8;
+export const MIN_SAVE_VERSION = 10;
 
 export class SaveTooOldError extends Error {}
 

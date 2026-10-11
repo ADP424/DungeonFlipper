@@ -3,7 +3,7 @@ import type { ObstacleDef } from '../types';
 export default {
   id: 'stairs_down',
   name: 'Stairs Down',
-  sprite: 'td:38',
+  sprite: 'obstacles/stairs_down',
   blocksMovement: [],
   blocksProjectiles: [],
   height: 'none',

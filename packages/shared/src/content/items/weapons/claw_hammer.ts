@@ -4,8 +4,8 @@ export default {
   id: 'claw_hammer',
   kind: 'weapon',
   name: 'Claw Hammer',
-  description: 'A light, quick hit. With nothing alive in the room, it demolishes walls and broken glass (low walls 1 use, everything else 2).',
-  icon: 'td:117',
+  description: 'A light, quick hit. Hold it on a wall or broken glass to demolish it (1 use each).',
+  icon: 'items/weapons/claw_hammer',
   attack: {
     type: 'melee',
     pattern: 'stab',

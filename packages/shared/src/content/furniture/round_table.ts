@@ -4,7 +4,7 @@ export default {
   id: 'round_table',
   name: 'Round Table',
   size: { w: 1, h: 1 },
-  sprite: 'ri:7',
+  sprite: 'furniture/round_table',
   rotatable: false,
   height: 0.6,
   blocksMovement: ['walk'],

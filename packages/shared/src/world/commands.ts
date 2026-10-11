@@ -1,5 +1,9 @@
+import { REALTORS_KEY, type Realtor } from './realtors';
+import { reputationKey, type Reputation } from './reputation';
+import { STAFF_KEY, type Staff } from './staff';
+/** The worst a tile's mess gets. */
+export const MAX_MESS = 3;
 import type { UtilityKind } from './utilities';
-import { DEATH_KEEPS_PASSIVES } from '../core/constants';
 import { tileKey } from '../core/geometry';
 import type {
   Barricade, DocKey, FloorState, FurniturePlacement, GroundItem, MonsterRecord, PlayerState, RoomInfo, RoomState, WorldState,
@@ -75,6 +79,17 @@ export type Command = Base & (
   | { type: 'tileSet'; roomId: string; x: number; y: number; obstacle: string | null }
   /** Lay / take up a pipe or wire segment on a tile (P6). */
   | { type: 'utilityLaid'; roomId: string; x: number; y: number; kind: UtilityKind }
+  /** Mess on a tile gets worse (up to 3) / is cleaned up (P7). */
+  | { type: 'messAdded'; roomId: string; x: number; y: number }
+  | { type: 'messCleared'; roomId: string; x: number; y: number }
+  /** Reputation goes up or down (D20). */
+  | { type: 'reputationAdded'; playerId: string; delta: number }
+  /** Hire / update, and let go of, a member of staff (P7). */
+  | { type: 'staffSet'; staff: Staff }
+  | { type: 'staffRemoved'; id: string }
+  /** Add / update, and remove, a rival realtor (P8). */
+  | { type: 'realtorSet'; realtor: Realtor }
+  | { type: 'realtorRemoved'; id: string }
   | { type: 'utilityRemoved'; roomId: string; x: number; y: number; kind: UtilityKind }
   /** A segment fails (`fault: true`) or is repaired. */
   | { type: 'utilityFault'; roomId: string; x: number; y: number; kind: UtilityKind; fault: boolean }
@@ -83,7 +98,7 @@ export type Command = Base & (
 );
 
 export type CommandType = Command['type'];
-export type PlayerPatch = Partial<Pick<PlayerState, 'cash' | 'redHalves' | 'baseRedMaxHalves' | 'hotbar' | 'passives' | 'carrying'>>;
+export type PlayerPatch = Partial<Pick<PlayerState, 'cash' | 'redHalves' | 'baseRedMaxHalves' | 'hotbar' | 'carrying'>>;
 
 export function emptyWorld(): WorldState {
   return {
@@ -200,7 +215,6 @@ export function applyCommand(state: WorldState, cmd: Command): DocKey[] {
     case 'playerDied': {
       const p = player(state, cmd.playerId);
       p.hotbar = { main: null, off: null, armor: null, slots: p.hotbar.slots.map(() => null) };
-      if (!DEATH_KEEPS_PASSIVES) p.passives = [];
       p.carrying = null;
       p.floor = cmd.respawn.floor;
       p.roomId = cmd.respawn.roomId;
@@ -368,6 +382,54 @@ export function applyCommand(state: WorldState, cmd: Command): DocKey[] {
       const r = room(state, cmd.roomId);
       r.furniture = r.furniture.filter((f) => f.uid !== cmd.uid);
       return [`room:${r.id}`];
+    }
+
+    case 'messAdded': {
+      const r = room(state, cmd.roomId);
+      const k = tileKey(cmd.x, cmd.y);
+      r.mess ??= {};
+      r.mess[k] = Math.min(MAX_MESS, (r.mess[k] ?? 0) + 1);
+      return [`room:${r.id}`];
+    }
+
+    case 'messCleared': {
+      const r = room(state, cmd.roomId);
+      const k = tileKey(cmd.x, cmd.y);
+      if (!r.mess?.[k]) return [];
+      delete r.mess[k];
+      return [`room:${r.id}`];
+    }
+
+    case 'reputationAdded': {
+      const key = reputationKey(cmd.playerId);
+      const prev = (state.globals[key] as Reputation | undefined)?.points ?? 0;
+      // It can go negative: infamy (see `infamyFactor`).
+      state.globals[key] = { points: prev + cmd.delta };
+      return [`global:${key}`];
+    }
+
+    case 'staffSet': {
+      state.globals[STAFF_KEY] = { ...((state.globals[STAFF_KEY] as Record<string, Staff> | undefined) ?? {}), [cmd.staff.id]: structuredClone(cmd.staff) };
+      return [`global:${STAFF_KEY}`];
+    }
+
+    case 'realtorSet': {
+      state.globals[REALTORS_KEY] = { ...((state.globals[REALTORS_KEY] as Record<string, Realtor> | undefined) ?? {}), [cmd.realtor.id]: structuredClone(cmd.realtor) };
+      return [`global:${REALTORS_KEY}`];
+    }
+
+    case 'realtorRemoved': {
+      const all = { ...((state.globals[REALTORS_KEY] as Record<string, Realtor> | undefined) ?? {}) };
+      delete all[cmd.id];
+      state.globals[REALTORS_KEY] = all;
+      return [`global:${REALTORS_KEY}`];
+    }
+
+    case 'staffRemoved': {
+      const all = { ...((state.globals[STAFF_KEY] as Record<string, Staff> | undefined) ?? {}) };
+      delete all[cmd.id];
+      state.globals[STAFF_KEY] = all;
+      return [`global:${STAFF_KEY}`];
     }
 
     case 'utilityLaid': {

@@ -5,7 +5,7 @@ export default {
   kind: 'roll',
   name: 'Crimson Carpet',
   description: 'Covers floor tiles (and doorways). Each tile costs 1.',
-  icon: 'proc:roll:carpet_crimson',
+  icon: 'items/rolls/roll_carpet_crimson',
   surface: 'carpet_crimson',
   coverage: 32,
 } satisfies RollDef;

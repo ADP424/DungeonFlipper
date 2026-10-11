@@ -2,10 +2,15 @@ import type { Rng } from '../core/rng';
 import { registerDaily, registerTick } from './advance';
 import type { Command } from './commands';
 import { APARTMENT_FLOOR } from './difficulty';
-import { roomLabel } from './securing';
+import { isSecure, roomLabel } from './securing';
 import { findSign, signs, unitAt, unitStats, type Unit, type UnitStats } from './units';
 import type { WorldState } from './types';
 import { openings } from './area';
+import { CELL_H, CELL_W } from '../core/constants';
+import { RoomLayout } from './layout';
+import { HAPPY_MOOD, REP, getReputation, infamyFactor, repTier } from './reputation';
+import { undercutBy } from './realtors';
+import { cashText } from './cash';
 
 /**
  * Tenants. A listed unit (a For Rent sign in it) draws applicants from the floor's lobby; you haggle
@@ -41,7 +46,19 @@ export interface Tenant {
   trapped?: number;
   /** Fled to a safe room next door while monsters are in their unit. */
   displaced?: boolean;
+  /** Household (P7): how many people, and their names (the first is who you deal with). Default 1. */
+  size?: number;
+  members?: string[];
+  /** Rent they've held back while unhappy (they pay it back once they cheer up). */
+  arrears?: number;
+  /** Under notice: they leave at the end of this day. Fair if they were behind on rent or miserable. */
+  evictDay?: number;
+  evictFair?: boolean;
+  /** What they've complained about, and since when (left 2+ days, it costs reputation). */
+  complaint?: { issue: Issue; since: number };
 }
+
+export type Issue = 'mess' | 'power' | 'water' | 'insecure';
 
 export const TENANTS_KEY = 'tenants';
 export const LANDLORD_KEY = 'landlord';
@@ -59,8 +76,41 @@ const FIRST = ['Dana', 'Morgan', 'Sam', 'Alex', 'Robin', 'Jesse', 'Casey', 'Rile
 const LAST = ['Novak', 'Okafor', 'Lindqvist', 'Reyes', 'Hart', 'Kowalski', 'Bell', 'Mbeki', 'Sato', 'Varga', 'Price', 'Doyle', 'Ferreira', 'Holt'];
 const TAG_PREFS = ['plant', 'light', 'seat', 'table', 'storage', 'music'];
 
-/** A new tier-1 applicant with 3–4 preferences, the first 1–2 of which you're told up front (D32). */
-export function makeApplicant(rng: Rng, id: string, signUid: string, floor: number, day: number): Tenant {
+/** Rent (and the tier's ceiling) scale with household size: a family of 4 pays 2.6× a single. */
+export const HOUSEHOLD_MUL = [0, 1, 1.6, 2.2, 2.6];
+/** Households: 60% singles, 25% couples, 15% families of 3–4. */
+function rollSize(rng: Rng): number {
+  const r = rng.next();
+  return r < 0.6 ? 1 : r < 0.85 ? 2 : rng.int(3, 4);
+}
+export const householdSize = (t: Tenant): number => t.size ?? 1;
+
+/** "Single", "Couple", "Family of 4". */
+export function householdLabel(t: Tenant): string {
+  const n = householdSize(t);
+  return n === 1 ? 'Single' : n === 2 ? 'Couple' : `Family of ${n}`;
+}
+
+/** Whether mess can land on a tile: open floor (no hole, obstacle or furniture). */
+export function messable(state: WorldState, roomId: string, x: number, y: number): boolean {
+  const st = state.rooms[roomId];
+  const info = st && state.floors[st.floor]?.rooms[roomId];
+  return !!info && new RoomLayout(info, st).isOpenFloor(x, y);
+}
+
+/** Below this mood, tenants hold back the rent. */
+export const WITHHOLD_MOOD = 25;
+/** Under this mood (or with arrears), an eviction is fair. */
+export const FAIR_EVICT_MOOD = 30;
+export const NOTICE_DAYS = 3;
+/** Messy tiles in a unit before its tenants complain. */
+export const MESS_COMPLAINT = 6;
+
+/**
+ * A new applicant of the given tier (reputation unlocks higher ones, D44): a household of 1–4 with
+ * 3–4 preferences (one more from tier 2), the first 1–2 of which you're told up front (D32).
+ */
+export function makeApplicant(rng: Rng, id: string, signUid: string, floor: number, day: number, tier = 1): Tenant {
   const prefs: Pref[] = [];
   const pool: Pref[] = rng.shuffle([
     ...TAG_PREFS.map((key) => ({ kind: 'tag' as const, key, like: rng.chance(0.75) })),
@@ -69,7 +119,7 @@ export function makeApplicant(rng: Rng, id: string, signUid: string, floor: numb
     { kind: 'space', like: rng.chance(0.5) },
     { kind: 'bright', like: rng.chance(0.7) },
   ]);
-  const n = rng.int(3, 4);
+  const n = rng.int(3, 4) + (tier >= 2 ? 1 : 0);
   for (const p of pool) {
     if (prefs.length >= n - 1) break;
     if (prefs.some((q) => q.kind === p.kind && q.key === p.key)) continue;
@@ -79,9 +129,13 @@ export function makeApplicant(rng: Rng, id: string, signUid: string, floor: numb
   prefs.splice(rng.int(1, prefs.length), 0, { kind: 'quiet', like: true });
   // Some won't live without power or running water (P6).
   if (rng.chance(UTILITY_NEED_CHANCE)) prefs.splice(rng.int(0, prefs.length), 0, { kind: 'utility', key: rng.chance(0.5) ? 'power' : 'water', like: true });
+  const size = rollSize(rng);
+  const last = rng.pick(LAST);
+  const members = Array.from({ length: size }, () => rng.pick(FIRST));
+  const name = size === 1 ? `${members[0]} ${last}` : size === 2 ? `${members[0]} & ${members[1]} ${last}` : `The ${last}s`;
   return {
-    id, name: `${rng.pick(FIRST)} ${rng.pick(LAST)}`, tier: 1, prefs, known: rng.int(1, 2),
-    signUid, floor, status: 'applicant', rent: 0, mood: 60, strikes: 0, since: day,
+    id, name, tier, prefs, known: rng.int(1, 2),
+    signUid, floor, status: 'applicant', rent: 0, mood: 60, strikes: 0, since: day, size, members,
   };
 }
 
@@ -109,13 +163,43 @@ export function missingNeed(t: Tenant, s: UnitStats): 'power' | 'water' | null {
 
 /** Daily rent the unit is worth to this tenant: their tier's base, scaled by their preferences, capped by the tier. 0 without a bed. */
 export function valuation(t: Tenant, s: UnitStats): number {
-  if (s.beds < 1 || missingNeed(t, s)) return 0;
+  if (!fitsHousehold(t, s) || missingNeed(t, s)) return 0;
   const [base, cap] = TIER_RENT[t.tier] ?? TIER_RENT[1]!;
+  const mul = HOUSEHOLD_MUL[householdSize(t)] ?? 1;
   const score = t.prefs.reduce((sum, p) => sum + prefScore(p, s), 0);
-  // Everyone pays more for power and running water.
+  // Everyone pays more for power and running water, and less for a mess.
   const utilities = (s.power ? 0.15 : 0) + (s.water ? 0.15 : 0);
-  return Math.max(1, Math.min(cap, Math.round(base * (1 + 0.3 * score + utilities))));
+  const mess = Math.max(0.5, 1 - 0.04 * s.mess);
+  return Math.max(1, Math.min(Math.round(cap * mul), Math.round(base * mul * (1 + 0.3 * score + utilities) * mess)));
 }
+
+/** Enough sleeping spots for everyone, and families need at least two beds. */
+export function fitsHousehold(t: Tenant, s: UnitStats): boolean {
+  const n = householdSize(t);
+  return s.beds >= 1 && s.sleeps >= n && (n < 3 || s.beds >= 2);
+}
+
+/** The top of the haggling slider for a tenant: comfortably above anything they'd pay. */
+export function offerCap(t: Tenant): number {
+  const cap = (TIER_RENT[t.tier] ?? TIER_RENT[1]!)[1] * (HOUSEHOLD_MUL[householdSize(t)] ?? 1);
+  return Math.max(MAX_OFFER, Math.ceil(cap * 1.3));
+}
+
+/** What a tenant would complain about right now (the most pressing first). */
+export function currentIssue(t: Tenant, s: UnitStats): Issue | null {
+  if (!s.secure) return 'insecure';
+  const need = missingNeed(t, s);
+  if (need) return need;
+  if (s.mess >= MESS_COMPLAINT) return 'mess';
+  return null;
+}
+
+const COMPLAINTS: Record<Issue, string> = {
+  insecure: "Things keep scratching at the doors. Is this place even secure?",
+  power: "The power's out. I can't live like this.",
+  water: "No running water. Seriously?",
+  mess: "This place is a tip. Can somebody clean it up?",
+};
 
 /** How a tenant takes a rent offer (D18). */
 export function haggle(value: number, offer: number): { result: 'accept' | 'counter' | 'refuse'; counter?: number; mood: number } {
@@ -124,8 +208,42 @@ export function haggle(value: number, offer: number): { result: 'accept' | 'coun
   return { result: 'refuse', mood: 0 };
 }
 
+/** TEMPORARY (testing): every valid listing draws an applicant each night. Set back to false to restore the odds. */
+export const TEMP_ALWAYS_APPLY = true;
+
+/**
+ * Why an open listing won't draw anyone tonight (or null if it can). Mirrors the checks in
+ * `tenantsDay`: the unit needs a bed, nobody already living there or viewing it, and a route to the
+ * lobby through rooms you own that are all secure (the lobby included).
+ */
+export function listingProblem(state: WorldState, floor: number, signUid: string): string | null {
+  const sign = findSign(state, signUid);
+  if (!sign) return 'the sign is gone';
+  if (sign.f.data?.closed === true) return 'the listing is closed';
+  const unit = unitAt(state, floor, sign.f.x, sign.f.y);
+  if (!unit) return "the sign isn't in a room you own";
+  for (const t of Object.values(getTenants(state))) {
+    if (t.signUid === signUid) return t.status === 'living' ? 'someone already lives here' : 'someone is already viewing it';
+    const u = t.status === 'living' ? tenantUnit(state, t) : null;
+    if (u?.key === unit.key) return 'someone already lives in this unit';
+  }
+  const s = unitStats(state, unit);
+  if (s.beds < 1) return 'there is no bed in the unit';
+  if (!s.connected) {
+    const f = state.floors[floor]!;
+    const lobby = f.rooms[f.lobbyRoomId]!;
+    if (state.rooms[lobby.id]?.ownerId !== unit.ownerId) return "the floor's lobby isn't yours";
+    if (!isSecure(state, lobby.id)) return `the lobby isn't secure (${roomLabel(lobby)} has a door to monsters without a strong enough barricade)`;
+    const bad = unit.rooms.find((id) => !isSecure(state, id));
+    if (bad) return `${roomLabel(f.rooms[bad]!)} isn't secure`;
+    return 'there is no route from the lobby through secure rooms you own';
+  }
+  return null;
+}
+
 /** Chance a listed unit draws an applicant today: 50% with nothing unsecured around it, less per unsecured neighbour, more so if it has monsters. */
 export function applicantChance(s: UnitStats): number {
+  if (TEMP_ALWAYS_APPLY) return 1;
   return Math.max(0.05, 0.5 - 0.08 * (s.borderUnsecured - s.borderUncleared) - 0.18 * s.borderUncleared);
 }
 
@@ -152,7 +270,11 @@ export function tenantsDay(state: WorldState, ctx: { day: number; rng: Rng }): C
   const minute = 24 * 60;
   let income = 0;
   let payers = 0;
+  let rep = 0;
+  let happy = 0;
   const taken = new Set<string>();
+  /** Units with a household living in them (one per unit). */
+  const occupied = new Set<string>();
   for (const t of Object.values(getTenants(state))) {
     const unit = tenantUnit(state, t);
     const where = unit ? roomLabel(state.floors[unit.floor]!.rooms[unit.rooms[0]!]!) : 'their old place';
@@ -164,9 +286,20 @@ export function tenantsDay(state: WorldState, ctx: { day: number; rng: Rng }): C
       continue;
     }
     taken.add(t.signUid);
+    if (unit) occupied.add(unit.key);
+    if (t.evictDay !== undefined && day >= t.evictDay) {
+      out.push({ type: 'tenantRemoved', id: t.id });
+      out.push(msg(rng, owner, day, minute, 'info', `${t.name} moved out of ${where}, as you told them to.`));
+      if (!t.evictFair) {
+        rep += REP.unfairEviction;
+        out.push(msg(rng, owner, day, minute, 'warn', `Word gets around: evicting ${t.name} for no good reason hurt your reputation.`));
+      }
+      continue;
+    }
     if (t.trapped !== undefined && unit?.rooms.some((id) => state.rooms[id]?.monsters.length)) {
       out.push({ type: 'tenantRemoved', id: t.id });
       out.push(msg(rng, owner, day, minute, 'urgent', `${t.name} didn't make it. Monsters were still in ${where} at the end of the day.`));
+      rep += REP.death;
       continue;
     }
     const s = unit ? unitStats(state, unit) : null;
@@ -183,20 +316,56 @@ export function tenantsDay(state: WorldState, ctx: { day: number; rng: Rng }): C
     if (t.rent > value) mood -= 8 * (t.rent - value);
     if (t.displaced) mood -= 10;
     if (missingNeed(t, s)) mood -= 10;
+    if (!fitsHousehold(t, s)) mood -= 15;
+    mood -= Math.min(10, Math.floor(s.mess / 3));
+    if (t.evictDay !== undefined) mood -= 10;
     mood = Math.max(-10, Math.min(100, Math.round(mood)));
     if (mood < 0) {
       out.push({ type: 'tenantRemoved', id: t.id });
       out.push(msg(rng, owner, day, minute, 'warn', `${t.name} moved out of ${where}. They weren't happy there.`));
+      rep += REP.leftUnhappy;
       continue;
     }
-    income += t.rent;
-    payers++;
-    out.push({ type: 'tenantSet', tenant: { ...t, mood, trapped: undefined } });
+    // Complaints: said once; left unresolved for two days or more, they cost reputation daily.
+    const issue = currentIssue(t, s);
+    let complaint = t.complaint;
+    if (!issue) complaint = undefined;
+    else if (complaint?.issue !== issue) {
+      complaint = { issue, since: day };
+      out.push(msg(rng, owner, day, minute, 'warn', COMPLAINTS[issue], t.name));
+    } else if (day - complaint.since >= 2) rep += REP.ignoredComplaint;
+    // Rent: held back while they're miserable; paid back once they're content again.
+    let arrears = t.arrears ?? 0;
+    if (mood < WITHHOLD_MOOD) {
+      if (!arrears) out.push(msg(rng, owner, day, minute, 'warn', `${t.name} is holding back the rent until things improve.`));
+      arrears += t.rent;
+    } else {
+      income += t.rent;
+      payers++;
+      if (arrears && mood >= 50) {
+        income += arrears;
+        out.push(msg(rng, owner, day, minute, 'info', `${t.name} paid back the ${cashText(arrears)} they owed.`));
+        arrears = 0;
+      }
+    }
+    if (mood >= HAPPY_MOOD) happy += REP.happy;
+    // Life makes a mess: each member, most days, somewhere in the unit.
+    const tiles = [...unit.tiles];
+    for (let i = 0; i < householdSize(t); i++) {
+      if (!tiles.length || !rng.chance(0.7)) continue;
+      const [x, y] = rng.pick(tiles).split(',').map(Number) as [number, number];
+      const roomId = state.floors[unit.floor]!.cells[`${Math.floor(x / CELL_W)},${Math.floor(y / CELL_H)}`];
+      // Only on open floor: not in a hole, on a wall or under furniture.
+      if (roomId && messable(state, roomId, x, y)) out.push({ type: 'messAdded', roomId, x, y });
+    }
+    out.push({ type: 'tenantSet', tenant: { ...t, mood, trapped: undefined, arrears: arrears || undefined, complaint } });
   }
+  rep += Math.min(REP.dailyGainCap, happy);
+  if (rep) out.push({ type: 'reputationAdded', playerId: owner, delta: rep });
   if (income > 0) {
     const cash = state.players[owner]?.cash ?? 0;
     out.push({ type: 'playerUpdated', playerId: owner, patch: { cash: cash + income } });
-    out.push(msg(rng, owner, day, minute, 'info', `Rent: +$${income} from ${payers} tenant${payers === 1 ? '' : 's'}.`));
+    out.push(msg(rng, owner, day, minute, 'info', `Rent: +${cashText(income)} from ${payers} tenant${payers === 1 ? '' : 's'}.`));
   }
   // New applicants for open listings without anyone in them.
   for (const floor of Object.values(state.floors)) {
@@ -204,10 +373,21 @@ export function tenantsDay(state: WorldState, ctx: { day: number; rng: Rng }): C
     for (const sign of signs(state, floor.index)) {
       if (!sign.open || taken.has(sign.f.uid)) continue;
       const unit = unitAt(state, floor.index, sign.f.x, sign.f.y);
-      if (!unit) continue;
+      if (!unit || occupied.has(unit.key)) continue;
       const s = unitStats(state, unit);
-      if (s.beds < 1 || !s.connected || !rng.chance(applicantChance(s))) continue;
-      const a = makeApplicant(rng, rid(rng, 't'), sign.f.uid, floor.index, day + 1);
+      const infamy = TEMP_ALWAYS_APPLY ? 1 : infamyFactor(getReputation(state, owner));
+      if (s.beds < 1 || !s.connected || !rng.chance(applicantChance(s) * infamy)) continue;
+      // A competitive or hostile realtor on the floor may undercut you for them.
+      const rival = TEMP_ALWAYS_APPLY ? null : undercutBy(state, floor.index, s, rng);
+      if (rival) {
+        out.push(msg(rng, owner, day, minute, 'info', `Someone came to look at ${roomLabel(floor.rooms[unit.rooms[0]!]!)}, but ${rival.name} offered them a cheaper place.`, 'Listings'));
+        continue;
+      }
+      // Your reputation tier sets who comes: mostly your top tier, sometimes a lower one.
+      const top = repTier(getReputation(state, owner));
+      const tier = top > 1 && rng.chance(0.4) ? rng.int(1, top - 1) : top;
+      const a = makeApplicant(rng, rid(rng, 't'), sign.f.uid, floor.index, day + 1, tier);
+      occupied.add(unit.key);
       out.push({ type: 'tenantSet', tenant: a });
       out.push(msg(rng, owner, day, minute, 'info', `${a.name} is coming up from the lobby to look at ${roomLabel(floor.rooms[unit.rooms[0]!]!)}.`, 'Listings'));
     }

@@ -1,7 +1,7 @@
 import { Sprite } from 'pixi.js';
-import { TILE_PX, itemDef, type GroundItem } from '@df/shared';
+import { itemDef, type GroundItem } from '@df/shared';
 import { tex } from '../../engine/assets';
-import { Entity } from './Entity';
+import { Entity, artPixel } from './Entity';
 
 /** An item lying on the floor. Spawns with a short "spill" arc from where it dropped. */
 export class GroundItemEntity extends Entity {
@@ -20,13 +20,11 @@ export class GroundItemEntity extends Entity {
     this.y = data.y;
     this.radius = 0.3;
     const def = itemDef(data.item);
-    this.shadow = new Sprite(tex('proc:shadow'));
+    this.shadow = new Sprite(tex('fx/shadow_small'));
     this.shadow.anchor.set(0.5);
-    this.shadow.scale.set(0.6);
     this.shadow.y = 3;
     this.sprite = new Sprite(tex(def.kind === 'pickup' && def.sprite ? def.sprite : def.icon));
     this.sprite.anchor.set(0.5, 0.7);
-    this.sprite.scale.set(def.kind === 'pickup' ? 0.75 : 0.85);
     this.view.addChild(this.shadow, this.sprite);
     if (spillFrom) this.spill = { fx: spillFrom.x, fy: spillFrom.y, t: 0, dur: 0.35 + Math.random() * 0.15 };
   }
@@ -56,7 +54,7 @@ export class GroundItemEntity extends Entity {
   override syncView(): void {
     super.syncView();
     const bob = this.spill ? 0 : Math.sin(this.bobT * 3) * 0.06;
-    this.sprite.y = -(this.z + bob) * TILE_PX;
+    this.sprite.y = -artPixel(this.z + bob);
     this.view.zIndex = this.y - 0.2;
   }
 }

@@ -4,8 +4,8 @@ export default {
   id: 'fire_axe',
   kind: 'weapon',
   name: 'Fire Axe',
-  description: 'Spin to hit everything around you. With nothing alive in the room, it chops down walls (low 1 use, tall 2).',
-  icon: 'td:118',
+  description: 'Spin to hit everything around you. Hold it on a wall to chop it down (1 use each).',
+  icon: 'items/weapons/fire_axe',
   attack: {
     type: 'melee',
     pattern: 'spin',

@@ -5,7 +5,7 @@ export default {
   id: 'company_flag',
   name: 'Company Flag',
   size: { w: 1, h: 1 },
-  sprite: 'proc:flag',
+  sprite: 'furniture/company_flag',
   rotatable: false,
   height: 1.4,
   blocksMovement: ['walk'],

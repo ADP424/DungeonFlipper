@@ -7,6 +7,6 @@ export default {
   radius: 0.25,
   lifetime: 2.5,
   splash: 0.9,
-  sprite: 'proc:fireball',
+  sprite: 'projectiles/torch_flame',
   light: { radius: 2.5, color: 0xff8030, intensity: 0.9, flicker: 0.3 },
 } satisfies ProjectileDef;

@@ -1,93 +1,173 @@
-import { Assets as PixiAssets, Rectangle, Texture, TextureStyle } from 'pixi.js';
+import { Rectangle, Texture, TextureStyle } from 'pixi.js';
 import { registry, wallQuarters, type SurfaceDef, type WallPiece } from '@df/shared';
-import { drawPattern, drawLight, drawers } from './procedural';
+import { drawLight } from './procedural';
 
 /**
  * Key-based texture registry. Game code only ever refers to sprite keys:
- *   td:<n>   Kenney Tiny Dungeon (CC0) tile n
- *   ri:<n>   Kenney Roguelike Indoors (CC0) tile n
- *   proc:<name>[:<arg>]  procedurally drawn (see procedural.ts)
- *   surf:<surfaceId>     floor/wall surface pattern
+ *   <path>               a PNG under apps/client/art/, without the extension ('furniture/sofa'). A folder
+ *                        of numbered PNGs is an animation: its frames are '<path>/0', '<path>/1'… (see
+ *                        `frameKeys`), and the folder's own key is its first frame.
  *   wall:<surfaceId>     a tall wall face covered in that wallpaper
  *   wallshort:<surfaceId> a short wall covered in that wallpaper
  *   auto:<set>:<mask>[:<surfaceId>]  an autotiled wall tile (see world/autotile.ts), composed from
- *                        the piece sheet public/assets/walls/<set>.png, optionally wallpapered
+ *                        the pieces in art/walls/<set>/, optionally wallpapered
  *   autogeo:<set>:<mask> the same tile's geometry for shadows (see drawAutotileGeometry)
- * Swapping art means changing these mappings, never game code.
+ * Swapping art means editing the PNGs, never game code.
+ *
+ * Every PNG under art/ is packed into one atlas texture at startup, so the whole game draws from a
+ * single GPU texture (sprites batch into few draw calls). Vite bundles the files themselves: adding,
+ * removing or editing one reloads the page in dev.
  */
-interface Sheet { image: HTMLImageElement; texture: Texture; cols: number; stride: number }
+const ART_FILES = import.meta.glob('../../art/**/*.png', { eager: true, query: '?url', import: 'default' }) as Record<string, string>;
+const ART_PREFIX = '../../art/';
+/** Transparent gap around each packed sprite, so rotated or scaled sprites never sample a neighbour. */
+const PAD = 2;
+const ATLAS_W = 1024;
 
-const sheets: Record<string, Sheet> = {};
+interface Region { x: number; y: number; w: number; h: number }
+let atlasCanvas: HTMLCanvasElement | null = null;
+let atlasTexture: Texture | null = null;
+const regions = new Map<string, Region>();
+/** Animation folder → its frame keys in order. */
+const animations = new Map<string, string[]>();
+
 const cache = new Map<string, Texture>();
 const canvasCache = new Map<string, HTMLCanvasElement>();
 const urlCache = new Map<string, string>();
 let lightTexture: Texture | null = null;
 
 /**
- * Wall piece sheets, 32×16: row 0 holds the 8×8 pieces outer / edge / inner / fill, each drawn as a
- * tile's top-left quarter (open toward north and west); row 1 holds matching wallpaper masks.
- * Placeholders come from scripts/wall-placeholders.mjs.
+ * Wall art, a folder per set (art/walls/<set>/): the 8×8 pieces outer / edge / inner / fill, each drawn
+ * as a tile's top-left quarter (open toward north and west), and next to each an optional wallpaper
+ * mask (<piece>_mask). Placeholders come from scripts/wall-placeholders.mjs.
  */
-const wallSheets: Record<string, HTMLImageElement | null> = {};
-const PIECE_X: Record<WallPiece, number> = { outer: 0, edge: 8, inner: 16, fill: 24 };
-
-const SHEETS = {
-  td: { url: '/assets/kenney-tiny-dungeon/tilemap_packed.png', cols: 12, stride: 16 },
-  ri: { url: '/assets/kenney-roguelike-indoors/sheet.png', cols: 27, stride: 17 },
-};
+const WALL_PIECES: WallPiece[] = ['outer', 'edge', 'inner', 'fill'];
+const wallPiece = (set: string, piece: WallPiece, mask = false) => regions.get(`walls/${set}/${piece}${mask ? '_mask' : ''}`);
 
 export async function loadAssets(): Promise<void> {
   TextureStyle.defaultOptions.scaleMode = 'nearest';
-  for (const [prefix, s] of Object.entries(SHEETS)) {
-    const texture: Texture = await PixiAssets.load(s.url);
-    texture.source.scaleMode = 'nearest';
-    const image = await loadImage(s.url);
-    sheets[prefix] = { image, texture, cols: s.cols, stride: s.stride };
-  }
-  const sets = new Set(registry.obstacles.all().flatMap((o) => (o.autotile ? [o.autotile.set] : [])));
-  await Promise.all([...sets].map(async (set) => {
-    wallSheets[set] = await loadImage(`/assets/walls/${set}.png`).catch(() => {
-      console.warn(`[assets] missing wall sheet walls/${set}.png`);
-      return null;
-    });
+  const entries = await Promise.all(Object.entries(ART_FILES).map(async ([file, url]) => {
+    const key = file.slice(ART_PREFIX.length, -'.png'.length);
+    return { key, image: await loadImage(url) };
   }));
+  packAtlas(entries);
+  for (const set of new Set(registry.obstacles.all().flatMap((o) => (o.autotile ? [o.autotile.set] : [])))) {
+    const lacking = WALL_PIECES.filter((p) => !wallPiece(set, p));
+    if (lacking.length) console.warn(`[assets] wall set art/walls/${set}/ is missing ${lacking.join(', ')}`);
+  }
+  for (const s of registry.surfaces.all()) {
+    if (!hasArt(s.sprite)) console.error(`[assets] surface '${s.id}' has no art/${s.sprite}.png`);
+  }
+  checkFurnitureArt();
+  checkEnemyArt();
 }
+
+/** Every enemy needs its idle art, the frames of each animation it names, and whatever it holds. */
+function checkEnemyArt(): void {
+  for (const def of registry.enemies.all()) {
+    const keys = [def.sprite, ...Object.values(def.anims ?? {}).map((a) => a.frames), ...(def.held ? [def.held.sprite] : [])];
+    for (const key of keys) if (!hasArt(key)) console.error(`[assets] enemy '${def.id}' has no art/${key}.png (or frames ${key}/0.png…)`);
+  }
+}
+
+/** Every piece needs a south view; turnable ones should have north and side too (missing ones use south). */
+function checkFurnitureArt(): void {
+  const partial: string[] = [];
+  for (const def of registry.furniture.all()) {
+    if (!hasArt(`${def.sprite}/south`)) console.error(`[assets] furniture '${def.id}' has no art/${def.sprite}/south.png`);
+    if (!def.rotatable) continue;
+    const missing = ['north', 'side'].filter((v) => !hasArt(`${def.sprite}/${v}`));
+    if (missing.length) partial.push(`${def.id} (${missing.join(', ')})`);
+  }
+  if (partial.length) console.warn(`[assets] turnable furniture using fallback views: ${partial.join('; ')}`);
+}
+
+/** Shelf-pack every image (tallest first) into one canvas, and index frames of animation folders. */
+function packAtlas(entries: { key: string; image: HTMLImageElement }[]): void {
+  entries.sort((a, b) => b.image.height - a.image.height || a.key.localeCompare(b.key));
+  let x = 0, y = 0, shelf = 0;
+  for (const { key, image } of entries) {
+    const w = image.width + PAD * 2, h = image.height + PAD * 2;
+    if (x + w > ATLAS_W) { x = 0; y += shelf; shelf = 0; }
+    regions.set(key, { x: x + PAD, y: y + PAD, w: image.width, h: image.height });
+    x += w;
+    shelf = Math.max(shelf, h);
+  }
+  const c = document.createElement('canvas');
+  c.width = ATLAS_W;
+  c.height = Math.max(1, y + shelf);
+  const ctx = c.getContext('2d')!;
+  for (const { key, image } of entries) {
+    const r = regions.get(key)!;
+    ctx.drawImage(image, r.x, r.y);
+  }
+  atlasCanvas = c;
+  atlasTexture = Texture.from(c);
+  atlasTexture.source.scaleMode = 'nearest';
+
+  // 'player/walk/0', 'player/walk/1'… make the animation 'player/walk'.
+  for (const key of regions.keys()) {
+    const m = /^(.*)\/(\d+)$/.exec(key);
+    if (!m) continue;
+    const frames = animations.get(m[1]!) ?? [];
+    frames.push(key);
+    animations.set(m[1]!, frames);
+  }
+  for (const frames of animations.values()) frames.sort((a, b) => frameNo(a) - frameNo(b));
+}
+
+const frameNo = (key: string) => Number(key.slice(key.lastIndexOf('/') + 1));
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => res(img);
-    img.onerror = rej;
+    img.onerror = () => rej(new Error(`Failed to load ${url}`));
     img.src = url;
   });
 }
 
-/** Draw the 16×16 source for a key onto a fresh canvas. */
+/** An art key's place in the atlas (an animation's key resolves to its first frame). */
+function region(key: string): Region | undefined {
+  return regions.get(key) ?? regions.get(animations.get(key)?.[0] ?? '');
+}
+
+/** The frame keys of an animation folder, in order; a single image is a one-frame animation. */
+export function frameKeys(key: string): string[] {
+  return animations.get(key) ?? [key];
+}
+
+/** Whether a key has art (a PNG or an animation folder). */
+export function hasArt(key: string): boolean {
+  return !!region(key);
+}
+
+/** Draw the source for a key onto a fresh canvas (16×16, or the art's own size). */
 export function canvasFor(key: string): HTMLCanvasElement {
   const hit = canvasCache.get(key);
   if (hit) return hit;
   const c = document.createElement('canvas');
   c.width = c.height = 16;
+  const r = key.includes(':') ? undefined : region(key);
+  if (r) {
+    c.width = r.w;
+    c.height = r.h;
+  }
   const ctx = c.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
   const [prefix, name, arg] = key.split(':') as [string, string, string | undefined];
-  if (prefix in sheets) {
-    const s = sheets[prefix]!;
-    const n = Number(name);
-    ctx.drawImage(s.image, (n % s.cols) * s.stride, Math.floor(n / s.cols) * s.stride, 16, 16, 0, 0, 16, 16);
-  } else if (prefix === 'proc') {
-    const d = drawers[name];
-    if (d) d(ctx, arg);
-    else missing(ctx);
+  if (r) {
+    ctx.drawImage(atlasCanvas!, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
   } else if (prefix === 'auto') {
     drawAutotile(ctx, name, Number(arg), key.split(':')[3]);
   } else if (prefix === 'autogeo') {
     drawAutotileGeometry(ctx, name, Number(arg));
-  } else if (prefix === 'surf' || prefix === 'wall' || prefix === 'wallshort') {
+  } else if (prefix === 'wall' || prefix === 'wallshort') {
     const s = registry.surfaces.tryGet(name);
     if (s) drawSurface(ctx, prefix, s);
     else missing(ctx);
   } else {
+    if (!key.includes(':')) console.warn(`[assets] no art for '${key}' (expected apps/client/art/${key}.png)`);
     missing(ctx);
   }
   canvasCache.set(key, c);
@@ -95,10 +175,9 @@ export function canvasFor(key: string): HTMLCanvasElement {
 }
 
 function drawSurface(ctx: CanvasRenderingContext2D, prefix: string, s: SurfaceDef) {
-  const { style, base, accent } = s.pattern;
-  if (prefix === 'surf') return drawPattern(ctx, style, base, accent);
+  const paper = canvasFor(s.sprite);
   if (prefix === 'wall') {
-    drawPattern(ctx, style, base, accent);
+    ctx.drawImage(paper, 0, 0);
     ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(0, 0, 16, 3);
     ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(0, 13, 16, 3);
     ctx.fillStyle = '#5a3a24'; ctx.fillRect(0, 14, 16, 2);
@@ -107,37 +186,43 @@ function drawSurface(ctx: CanvasRenderingContext2D, prefix: string, s: SurfaceDe
   // Short wall: only the lower block is papered.
   ctx.save();
   ctx.beginPath(); ctx.rect(0, 4, 16, 11); ctx.clip();
-  drawPattern(ctx, style, base, accent);
+  ctx.drawImage(paper, 0, 0);
   ctx.restore();
   ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(0, 4, 16, 2);
   ctx.fillStyle = '#5a3a24'; ctx.fillRect(0, 13, 16, 2);
   ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(1, 15, 15, 1);
 }
 
+/** Copy an 8×8 wall piece (or its wallpaper mask; a piece without one takes no paper) onto `target` at `dx, dy`. */
+function drawPiece(target: CanvasRenderingContext2D, set: string, piece: WallPiece, mask: boolean, dx: number, dy: number) {
+  const r = wallPiece(set, piece, mask);
+  if (r) target.drawImage(atlasCanvas!, r.x, r.y, 8, 8, dx, dy, 8, 8);
+}
+
 /** Compose a wall tile from its four rotated quarter pieces, then lay wallpaper over the face mask. */
 function drawAutotile(ctx: CanvasRenderingContext2D, set: string, mask: number, surface?: string) {
-  const img = wallSheets[set];
-  if (!img) return missing(ctx);
+  if (!WALL_PIECES.every((p) => wallPiece(set, p))) return missing(ctx);
   const quarters = wallQuarters(mask);
-  const blit = (target: CanvasRenderingContext2D, row: number) =>
+  const blit = (target: CanvasRenderingContext2D, paperMask: boolean) =>
     quarters.forEach(({ piece, rot }, q) => {
       const qx = q === 1 || q === 2 ? 8 : 0, qy = q >= 2 ? 8 : 0;
       target.save();
       target.translate(qx + 4, qy + 4);
-      target.rotate((rot * Math.PI) / 2);
-      target.drawImage(img, PIECE_X[piece], row * 8, 8, 8, -4, -4, 8, 8);
+      // The fill has no open side to face: left unturned, its texture runs the same way in every quarter.
+      if (piece !== 'fill') target.rotate((rot * Math.PI) / 2);
+      drawPiece(target, set, piece, paperMask, -4, -4);
       target.restore();
     });
-  blit(ctx, 0);
+  blit(ctx, false);
   const s = surface ? registry.surfaces.tryGet(surface) : undefined;
   if (!s) return;
   const paper = document.createElement('canvas');
   paper.width = paper.height = 16;
   const p = paper.getContext('2d')!;
   p.imageSmoothingEnabled = false;
-  blit(p, 1);
+  blit(p, true);
   p.globalCompositeOperation = 'source-in';
-  p.drawImage(canvasFor(`surf:${s.id}`), 0, 0);
+  p.drawImage(canvasFor(s.sprite), 0, 0);
   ctx.drawImage(paper, 0, 0);
 }
 
@@ -150,12 +235,11 @@ function faceDepth(set: string): number {
   let d = faceDepthCache.get(set);
   if (d !== undefined) return d;
   d = 4;
-  const img = wallSheets[set];
-  if (img) {
+  if (wallPiece(set, 'edge', true)) {
     const c = document.createElement('canvas');
     c.width = c.height = 8;
     const x = c.getContext('2d', { willReadFrequently: true })!;
-    x.drawImage(img, PIECE_X.edge, 8, 8, 8, 0, 0, 8, 8);
+    drawPiece(x, set, 'edge', true, 0, 0);
     const a = x.getImageData(0, 0, 8, 8).data;
     let rows = 0;
     for (let y = 0; y < 8; y++) if (a[(y * 8 + 3) * 4 + 3]! > 0) rows = y;
@@ -203,22 +287,18 @@ function drawAutotileGeometry(ctx: CanvasRenderingContext2D, set: string, mask: 
 }
 
 function missing(ctx: CanvasRenderingContext2D) {
-  ctx.fillStyle = '#ff00ff'; ctx.fillRect(0, 0, 16, 16);
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 8, 8); ctx.fillRect(8, 8, 8, 8);
+  const { width: w, height: h } = ctx.canvas;
+  ctx.fillStyle = '#ff00ff'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w / 2, h / 2); ctx.fillRect(w / 2, h / 2, w / 2, h / 2);
 }
 
 export function tex(key: string): Texture {
   const hit = cache.get(key);
   if (hit) return hit;
   let t: Texture;
-  const [prefix, name] = key.split(':') as [string, string];
-  const s = sheets[prefix];
-  if (s) {
-    const n = Number(name);
-    t = new Texture({
-      source: s.texture.source,
-      frame: new Rectangle((n % s.cols) * s.stride, Math.floor(n / s.cols) * s.stride, 16, 16),
-    });
+  const r = key.includes(':') ? undefined : region(key);
+  if (r) {
+    t = new Texture({ source: atlasTexture!.source, frame: new Rectangle(r.x, r.y, r.w, r.h) });
   } else {
     t = Texture.from(canvasFor(key));
     t.source.scaleMode = 'nearest';
@@ -227,7 +307,21 @@ export function tex(key: string): Texture {
   return t;
 }
 
-/** Data URL for DOM icons. */
+const alphaCache = new Map<string, { w: number; h: number; a: Uint8Array }>();
+/** Whether a sprite's pixel (art px from its top-left) is solid (for picking things by their art). */
+export function opaqueAt(key: string, x: number, y: number): boolean {
+  let m = alphaCache.get(key);
+  if (!m) {
+    const c = canvasFor(key);
+    const d = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+    const a = new Uint8Array(c.width * c.height);
+    for (let i = 0; i < a.length; i++) a[i] = d[i * 4 + 3]! > 40 ? 1 : 0;
+    m = { w: c.width, h: c.height, a };
+    alphaCache.set(key, m);
+  }
+  return x >= 0 && y >= 0 && x < m.w && y < m.h && m.a[y * m.w + x] === 1;
+}
+
 const silhouettes = new Map<string, Texture>();
 
 /**
@@ -258,6 +352,7 @@ export function silhouette(key: string): Texture {
   return t;
 }
 
+/** Data URL for DOM icons. */
 export function iconUrl(key: string): string {
   let u = urlCache.get(key);
   if (!u) {

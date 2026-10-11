@@ -1,3 +1,6 @@
+import realtor from './realtor';
+import realtorGuard from './realtor_guard';
+import thug from './thug';
 import type { EnemyDef } from '../types';
 import dampBlob from './damp_blob';
 import rat from './rat';
@@ -21,4 +24,7 @@ export default [
   hrRep,
   waterCooler,
   mannequin,
+  realtor,
+  realtorGuard,
+  thug,
 ] satisfies EnemyDef[];

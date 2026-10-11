@@ -7,6 +7,6 @@ export default {
   radius: 0.22,
   lifetime: 2.5,
   pierce: 3,
-  sprite: 'proc:frost_orb',
+  sprite: 'projectiles/foam_cloud',
   light: { radius: 2, color: 0x80d0ff, intensity: 0.8 },
 } satisfies ProjectileDef;

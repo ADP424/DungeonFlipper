@@ -5,7 +5,7 @@ export default {
   kind: 'roll',
   name: 'Oak Flooring',
   description: 'Covers floor tiles (and doorways). Each tile costs 1.',
-  icon: 'proc:roll:wood_oak',
+  icon: 'items/rolls/roll_wood_oak',
   surface: 'wood_oak',
   coverage: 32,
 } satisfies RollDef;

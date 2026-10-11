@@ -1,21 +1,23 @@
 import type { RoomTemplateDef } from '../types';
 
-/** Lobby of the floors below the first: stairs back up, and the elevator. */
+/** Lobby of the floors below the first: stairs back up, the elevator, a generator and a water main. */
 export default {
   id: 'lower_lobby',
   cells: [{ cx: 0, cy: 0 }],
   tags: ['stairsUp', 'lobby'],
   startsOwned: true,
   map: [
-    '.................',
-    '.................',
-    '.................',
-    '.................',
-    '........U........',
-    '.................',
-    '.................',
-    '.................',
-    '.................',
+    '...V.........',
+    '.G.........M.',
+    '.............',
+    '......U......',
+    '.............',
+    '.............',
+    '.............',
   ],
-  furniture: [{ def: 'elevator', x: 5, y: 0 }],
+  legend: {
+    G: { furniture: 'generator' },
+    M: { furniture: 'water_main' },
+    V: { furniture: 'elevator' },
+  },
 } satisfies RoomTemplateDef;

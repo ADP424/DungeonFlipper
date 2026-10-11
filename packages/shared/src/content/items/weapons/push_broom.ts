@@ -5,7 +5,7 @@ export default {
   kind: 'weapon',
   name: 'Push Broom',
   description: 'A long reaching jab.',
-  icon: 'td:131',
+  icon: 'items/weapons/push_broom',
   attack: {
     type: 'melee',
     pattern: 'stab',

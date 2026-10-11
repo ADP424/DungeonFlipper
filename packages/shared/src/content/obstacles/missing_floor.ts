@@ -3,7 +3,7 @@ import type { ObstacleDef } from '../types';
 export default {
   id: 'missing_floor',
   name: 'Missing Floor',
-  sprite: 'proc:hole',
+  sprite: 'obstacles/missing_floor',
   blocksMovement: ['walk'],
   blocksProjectiles: [],
   height: 'none',

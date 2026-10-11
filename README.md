@@ -1,8 +1,8 @@
 # Dungeon Flipper
 
-A top-down crawler in the spirit of *The Binding of Isaac* and classic *Zelda*, set in the Backrooms: an endless, slightly haunted space of yellow wallpaper and damp carpet behind a crack in your apartment's closet. You're an ambitious property developer. Every room you clear becomes **your property**, and you turn it into a home yourself: haul furniture, hang wallpaper, lay carpet, knock down walls, patch missing floor, build partitions and light the place up. Your tools are your weapons: the crowbar, sledgehammer and nail gun fight while monsters are around and renovate once the room is quiet.
+A top-down crawler in the spirit of *The Binding of Isaac* and classic *Zelda*, set in the Backrooms: an endless, slightly haunted space of yellow wallpaper and damp carpet behind a crack in your apartment's closet. You're an ambitious property developer. Every room you clear becomes **your property**, and you turn it into a home yourself: haul furniture, hang wallpaper, lay carpet, knock down walls, patch missing floor, build partitions and light the place up. Your tools are your weapons: the crowbar, sledgehammer and nail gun fight on a click and do their work when held on a tile.
 
-Art is placeholder (Kenney fantasy packs and procedural sprites) until the theme's own art exists.
+Art is placeholder (mostly from Kenney's fantasy packs) until the theme's own art exists. Every sprite is a PNG under `apps/client/art/` (see [Art](#art)).
 
 ## Running
 
@@ -25,35 +25,46 @@ Only WASD and the mouse:
 | Mouse | Aim |
 | Left click | Main hand: attack, or use a tool or roll on the highlighted tile |
 | Right click (hold) | Off hand: attack with an off-hand weapon |
+| Either click, with that hand empty | Punch: weak and very short, but always there |
 | Scroll wheel | Cycle the main hand through the hotbar. While carrying, rotate the furniture |
 | Left click on furniture | Lift it, anywhere (with a weapon in hand and monsters around, the click attacks instead). Your hands are busy while carrying; click again to place it where the ghost shows |
 | Right click | Use the off-hand item: any tool, roll or weapon works in either hand |
 | Click a chest | Open storage. Hold to lift it |
-| Drag hotbar items | Swap slots, merge matching tool / roll stacks (up to 256), or drag into the world to drop the item |
+| Left click an item (hotbar, chest, toolkit) | Pick it up. Holding something: put it all down (merging into a matching stack, or swapping) |
+| Right click an item | Pick up half a stack. Holding something: put down one |
+| Click the world while holding an item | Drop it at your feet |
 | Shift-click an item (chest or toolkit open) | Send it across: hotbar → container or back, topping up matching stacks first |
-| Double-click an item (hotbar, chest or toolkit) | Take it in hand (armour goes on); what you held goes where it came from |
-| Click a toolkit in the hotbar | Open it: six slots for tools, rolls and tool-weapons, in one hotbar slot |
+| Double-click an item | Take it in hand: weapons and working tools (mop, spools, demolition) in your main hand (L), placeables and materials (flags, kits, signs, rolls) in your right (R), armour on |
+| Right click a toolkit in the hotbar | Open it (six slots for tools, rolls and tool-weapons). Right-click it while holding a tool to put the tool inside |
 | Hold left click on a wall you built (empty-handed or with a tool that can't) | Break it by hand: 10 s for a low wall, 15 s for a tall one. Never works on the dungeon's own walls |
-| Click the minimap / upgrade icons | Full map (drag to pan, scroll to zoom) / upgrade list |
+| Click the minimap | Full map (drag to pan, scroll to zoom) |
 | Escape | Close the open panel, or pause (settings live in the pause menu) |
 
-**Your phone:** click the phone icon under the minimap. It comes up in the middle of the screen and pauses the game. Its apps: Messages (today's messages, with earlier ones a tap away; you only hear about rooms you own being invaded), Tenants (a contact for everyone renting from you or viewing a listing), Hardware (orders), Map, Floorplan and Sleep. Sleeping, through the phone or in your own bed, always asks first. Escape backs out of an app, then puts the phone away.
+**Your phone:** click the phone icon under the minimap (bottom left). It comes up in the middle of the screen and pauses the game. Its apps: Messages (today's messages, with earlier ones a tap away; you only hear about rooms you own being invaded), Tenants (a contact for everyone renting from you or viewing a listing), Hardware (orders), Map, Floorplan and Sleep. Sleeping, through the phone or in your own bed, always asks first. Escape backs out of an app, then puts the phone away.
 
 **Sharing tiles:** flooring, pipes and wires go under furniture: with a roll or a spool in hand, clicking a furnished tile works on the floor (click again once it's done to lift the furniture instead). Small things (desk lamps, plants) can stand on tables and dressers; click the tile to take the top one first.
+
+**Households, mess and staff:** applicants can be singles, couples or families: a couple needs two sleeping spots (a Double Bed sleeps two), a family also needs two beds, and bigger households pay more. Tenants make a little mess every day, and monsters make a lot (where they break in and where they die); mess lowers mood and rent, so mop it up (Mop) or hire a cleaner from the phone's Staff app. A handyman fixes pipe and wire faults and patches worn barricades. Staff are paid every night; if you can't pay, they quit.
+
+**Reputation:** happy tenants raise it; tenants dying, unfair evictions, unhappy tenants leaving and complaints you ignore lower it. Higher tiers (40 and 100 points) bring wealthier tenants who pay much more and expect more. Miserable tenants hold back rent until things improve. To evict, talk to a tenant and press Evict: they get three days' notice, and it's only held against you if they were paying and happy.
+
+**Rival realtors:** from day 3, realtors set up offices in rooms you've cleared but not claimed, and claim more over time. They're Amiable (just compete for space), Competitive (undercut your listings and lure your unhappy tenants) or Hostile (also send thugs to rob you; you get a warning and two hours to get there and fight them off). Click a realtor in their office to trade: sell them a room, buy one of theirs, buy from their stock, sell what you're holding, or make amends to cool them down a step. They and their guards fight back if attacked. Robbing them or killing them costs a lot of reputation, and below zero (infamous) applicants stop coming.
+
+**Elevators:** each lobby's elevator needs power (wire it to the generator). Pick a floor and the doors open; walk in within ten seconds to ride, carrying whatever you hold.
 
 **Utilities:** once a room is yours, it's on your own grid. Lamps, fridges, sinks and toilets only work when they're connected to a source: every lobby has a generator (power) and a water main (water), and more turn up farther out. Lay wire with a Wire Spool and pipe with a Pipe Bundle (click, or hold and drag along tiles; they run through floors and walls). While you hold one you see the network: live runs are bright, dead ones grey, and fixtures are outlined green (working) or red. Now and then a segment fails: a puddle or sparks mark the spot, and the same tool fixes it. Tenants pay more for power and water, and some won't live without them.
 
 **Time:** the clock runs like Stardew Valley's: one in-game minute per real second, stopped while a menu or panel is open or the game is paused. A day ends when you sleep.
 
-**Securing:** plant a company flag in a cleared room to claim it (you start with four; more turn up as loot or cost $10 in the phone's Hardware app). Monsters pour in through any unbarricaded door that leads to a room with monsters, so board those up (plank barricades, security, steel or blast doors; harder neighbours need stronger ones) to keep it secure. Hover a barricade to see its durability. On the map (click the minimap), barricades show in their doorways, and hovering a room or a barricade tells you its status and durability. Barricades wear down over time and can break, and an owned room left unsecured is lost at the end of the next day. A barricade shows on both sides of its doorway. Planks block you too: hold left-click on a barricade to tear it down (a second per tier; it's lost), or pry it off with a crowbar to keep it (it keeps its wear). Monsters move back into cleared rooms that border uncleared ones. Kits come from loot and the phone's Hardware app (delivered to your apartment the next morning).
+**Securing:** plant a company flag in a cleared room to claim it (you start with four; more turn up as loot or cost 10 cash in the phone's Hardware app). Monsters pour in through any unbarricaded door that leads to a room with monsters, so board those up (plank barricades, security, steel or blast doors; harder neighbours need stronger ones) to keep it secure. Hover a barricade to see its durability. On the map (click the minimap), barricades show in their doorways, and hovering a room or a barricade tells you its status and durability. Barricades wear down over time and can break, and an owned room left unsecured is lost at the end of the next day. A barricade shows on both sides of its doorway. Planks block you too: hold left-click on a barricade to tear it down (a second per tier; it's lost), or pry it off with a crowbar to keep it (it keeps its wear). Monsters move back into cleared rooms that border uncleared ones. Kits come from loot and the phone's Hardware app (delivered to your apartment the next morning).
 
 **Your estate:** all the rooms you own that connect form one seamless space: walk between them with no screen change and no time passing, and monsters that get in will chase you from room to room. Hold a sledgehammer on the wall between any two rooms to knock it through; rooms joined that way become one space, whoever owns them. The phone's Floorplan app outlines the original rooms.
 
-**Anything goes:** you can renovate, build, break, haul furniture and plant flags anywhere, owned or not, monsters or not. Tools and rolls always work; dual-use weapons renovate when nothing is alive in the room and fight otherwise. Walk into the crack in your closet (or its other end in Level 1's lobby) to step through, carrying whatever you hold. The Hardware app also sells furniture (beds, chairs, lamps…), which is set down on your apartment floor.
+**Anything goes:** you can renovate, build, break, haul furniture and plant flags anywhere, owned or not, monsters or not. Tools and rolls work at a click. Dual-use weapons always attack on a click; hold the button on a tile for half a second to use one as a tool instead (the nail gun mends barricades this way, 10 durability a use). Walk into the crack in your closet (or its other end in Level 1's lobby) to step through, carrying whatever you hold. The Hardware app also sells furniture (beds, chairs, lamps…), which is set down on your apartment floor.
 
 **Tenants:** put a For Rent sign (you start with two; Hardware sells more) in a unit, meaning a stretch of your floor bounded by walls and doorways, with a bed in it. Each morning a listed unit may draw an applicant: about half the time if it borders nothing unsecured, less for every unsecured neighbour, and much less next to rooms with monsters. Click an applicant to see what they want and haggle with the slider; three bad offers and they walk. Tenants pay rent every morning, wander their unit, flee breaches if there's somewhere safe next door, and leave if they get unhappy. Talk to them to learn more of their tastes. Click a sign to close or reopen its listing. Your own landlord wants rent every week. On the map, rented units are blue with their tenants' faces, units for rent are green with a $, and each owned space is outlined.
 
-Dev builds also have F2 (random item), F3 (+$50), F4 (kill room), F6 (heal), F7 (random furniture), F8 (next floor), F9 (reset world), F10 (+1 hour) and Shift+F10 (skip to 11:45 PM).
+Dev builds also have F2 (random item), F3 (+50 cash), F4 (kill room), F6 (heal), F7 (random furniture), F8 (next floor), F9 (reset world), F10 (+1 hour) and Shift+F10 (skip to 11:45 PM).
 
 ## Architecture
 
@@ -70,25 +81,72 @@ apps/server       Fastify + SQLite. Applies the same command reducer and stores 
 
 Every game thing is a **data def in its own file**, in a folder per kind under `packages/shared/src/content/`. Each folder's `index.ts` lists its defs, and `content/index.ts` registers and validates everything at startup.
 
-- **Weapon / armor / tool / roll / passive / pickup:** add a file under `items/<kind>/`. Melee weapons pick a pattern (`stab`, `arc`, `smash`, `spin`) with a `range` in tiles at quarter-tile precision. Ranged weapons reference a projectile.
+- **Weapon / armor / tool / roll / pickup:** add a file under `items/<kind>/`. Melee weapons pick a pattern (`stab`, `arc`, `smash`, `spin`) with a `range` in tiles at quarter-tile precision. Ranged weapons reference a projectile.
 - **Projectile:** `projectiles/`. Its `trajectory` (`straight` or `lobbed`) decides which obstacles stop it.
-- **Obstacle:** `obstacles/`. It declares `blocksMovement` (movement kinds) and `blocksProjectiles` (trajectories), an optional `hazard`, a `height` (low walls cost 1 to build, demolish or paper, tall walls 2; it also sets shadow length), `renovate` actions, an optional `trigger` (for example stairs) and, for walls, an `autotile` piece set (see below).
-- **Enemy:** `enemies/` or `bosses/`. It sets a movement behavior and **any number of attack behaviors**, all referenced by id. The behaviors live in `apps/client/src/game/behaviors/`. Its `threat` (spawn-budget cost) and `tags` decide where it can spawn; bosses also set `boss.minDifficulty`.
-- **Furniture:** `furniture/`. It sets a footprint, a sprite (a single key or a grid of tile keys), a `height` for its shadow, an optional `light` (with `shadows: true`, objects in the room cast shadows away from it), an optional `container`, and optionally `fixed` (can't be lifted) and a `use` click behavior (`apps/client/src/game/actions/furnitureUses.ts`). Furniture with a `value` (1–5) and `tags` can turn up in template furniture slots. Furniture can also be drawn into a room template's map through a legend entry (`*` is a space heater); it can be lifted like any other.
-- **Surface** (wallpaper or flooring): `surfaces/`. It holds a procedural pattern description.
-- **Loot table:** `lootTables/`. Each *drop* rolls independently. A passing drop picks exactly one *entry* by its own chance, and any leftover probability yields nothing. Loot never includes furniture: furniture is found in rooms.
-- **Room template:** `roomTemplates/`. It has an ASCII map (legend in `legend.ts`) over a shape made of 19×11-tile cells. Any polyomino works, and the generator mirrors templates to fit. Enemies are **spawn slots**: `e` (any), `F` (flyer), `R` (ranged), `M` (brute) and `B` (boss) are filled at generation from the room's difficulty and threat budget; a lowercase letter (`g` intern, `k` security guard…) pins a specific enemy, and a template legend entry `{ slot: { enemies: [...] } }` picks from a list. `$` (anything) and `L` (a light) are furniture slots, filled by value around the room's difficulty. `attach: ['stairsDown']` brings a room along behind this one (boss rooms).
+- **Obstacle:** `obstacles/`. It declares `blocksMovement` (movement kinds) and `blocksProjectiles` (trajectories), an optional `hazard`, a `height` (low walls cost 1 to build, demolish or paper, tall walls 2; it also sets shadow length), `renovate` actions, an optional `trigger` (for example stairs) and, for walls, an `autotile` piece set (its art folder; see [Wall art](#wall-art)).
+- **Enemy:** `enemies/` or `bosses/`. Its stats are the same wherever it's found (nothing scales them). `ai` names its **brain** and holds every number that tunes it; `contactDamage` is what touching it costs; `loot` is its own drops; `anims` names its animations (wind-ups and the like) and `held` what it carries. `difficulty` describes how hard it is on roughly the scale rooms use, and is only read when monsters spill through doors. See [Enemies](#enemies).
+- **Furniture:** `furniture/`. It sets a footprint (`size`, the tiles it stands on, facing south), a sprite (an art folder with a view per facing; see [Art](#art)), whether it's `rotatable`, a `height` for its shadow, an optional `light` (with `shadows: true`, objects in the room cast shadows away from it; `at` places it on the floor plan, in pixels), an optional `container`, and optionally `fixed` (can't be lifted) and a `use` click behavior (`apps/client/src/game/actions/furnitureUses.ts`). Furniture gets into the world by being drawn into a room template's map; it can be lifted like any other.
+  - **Collision:** `collision` lists what's solid as pixel boxes within the footprint facing south (default: the whole footprint). The floor lamp is solid only at its stand, so you can walk behind its pole: you're drawn behind a piece when you're behind its solid base, and it casts its shadow from those boxes (without them, from its art's outline).
+  - **Turning:** a piece turns around a `pivot` (a cell centre or grid corner, in tiles), chosen from its shape unless given: pieces with matching sides turn in place, a bed turns about its head, a sofa about its left end. Collision boxes and `light.at` turn with it.
+- **Surface** (wallpaper or flooring): `surfaces/`. It names its texture (`sprite`): one filled 16×16 image, `floor/<id>` for flooring or `wallpaper/<id>` for wallpaper.
+- **Loot:** every enemy def has its own `loot`. Each *drop* rolls independently. A passing drop picks exactly one *entry* by its own chance, and any leftover probability yields nothing. Lists several enemies share (weapons and armor, renovation supplies) are written once in `loot/groups.ts`. Loot never includes furniture: furniture is found in rooms.
+- **Room template:** `roomTemplates/`. It has an ASCII map over a shape made of 15×9-tile cells (13×7 inside). Any polyomino works, and the generator mirrors templates to fit. A room is **designed, not rolled**: the shared characters in `legend.ts` are structure only (`#` wall, `w` low wall, `O` missing floor, `^` broken glass, stairs), and every other character is a slot the template itself names in its `legend`: `r: { enemy: 'rat' }`, `S: { furniture: 'sofa', rot: 1 }` (the character marks the top-left tile of the footprint; containers can list `contents`). Characters only mean something inside their own template, so a room can hold any number of different things. Its `difficulty` is the designer's rating (any number ≥ 0): the room only appears at least that deep (floor baseline + distance from the lobby), more often farther out, and it sets the barricades its doors need and how much it spills. It never changes what's in the room. Furniture can't stand on the tile inside a possible door (the middle of each outer edge); startup validation says so. `attach: ['stairsDown']` brings a room along behind this one (boss rooms).
 - **Health layer:** `healthLayers/`. Layers drain in priority order. Armor is a layer bound to an item, so the item breaks when the layer empties.
+
+### Enemies
+
+Every enemy plays differently, so every enemy has its own **brain**: `apps/client/src/game/behaviors/enemies/<id>.ts`, registered in `behaviors/index.ts` under the id its def names in `ai.id`. A brain is a small state machine written with shared building blocks, never a shared pattern:
+
+- `steering.ts`: ways of moving (`chase` along the room's flow field, `flee`, `circle`, `moveTo`, `turnToward`) and questions (`toPlayer`, `clearToPlayer`, `watched`).
+- `actions.ts`: things to do (`shoot`, `fan`, `ring`, `summon`).
+- `brain.ts`: `defineBrain({ init, update })`, and `Phased` / `enter` for brains that work in phases (`flutter → windup → swoop → recover`).
+
+Each frame the enemy starts from rest: standing still, facing the player, hurting on touch, no shield up, showing its idle art. The brain sets whatever is different this frame (`e.vx`/`e.vy`, `e.facing`, `e.contact = false`, `e.blockArc`, `e.pose('windup', seconds)`). Every tunable number belongs in the def's `ai.params`, typed by the brain's `Params` interface, so balance is edited in the def. Brains look up the projectiles and enemies they name in `init`, which also runs once per def at startup: a missing brain or a wrong id stops the game from starting.
+
+To add an enemy: write its def, write its brain, list the brain in `behaviors/index.ts`, and give it art.
+
+| Enemy | How it plays |
+|---|---|
+| Rat | Runs straight at you, fast |
+| Ceiling Moth | Flutters slowly away, then swoops straight through where you stand |
+| Damp Blob | A few short hops, then a long leap that lands in a ring of droplets |
+| Intern | Circles out of reach, darts in and backs off; bolder in numbers |
+| Mannequin | Frozen (and harmless) while you face it; faster than you when you don't |
+| Water Cooler | Lobs globs that leave slowing puddles; sprays all round when hit |
+| Flicker | Blinks out, reappears elsewhere firing; can only be hit while visible |
+| Stapler Clerk | Takes cover, steps out for a burst of staples, relocates when you close in |
+| HR Representative | Hides behind colleagues throwing homing pens (swat them with a swing); alone, it panics and lobs the stapler |
+| Security Guard | A riot shield stops everything from the front; charges; dazed and open if the charge hits a wall |
+| Thug | Sidesteps around you between heavy lunges (a full heart) |
+| Realtor | Keeps away and phones for security |
+| Office Security | Circles at taser range, shoves you back if you get close |
+| The Facility Manager | Charges, sweeps and rings of clipboards; enraged below half health |
+
+Monsters that spill into a room you've cleared are more of whatever lives in the room they came from, until the invaded room holds 3.5× that room's difficulty in enemy `difficulty`.
+
+### Art
+
+Every sprite is a PNG in `apps/client/art/`, in a folder per kind (enemies and furniture have a folder per def): `player/`, `enemies/`, `bosses/`, `npcs/`, `furniture/`, `items/<kind>/`, `projectiles/`, `obstacles/`, `barricades/`, `floor/`, `wallpaper/`, `fx/`, `ui/` and `walls/`. A def refers to its art by path without the extension: `icon: 'items/weapons/crowbar'` is `art/items/weapons/crowbar.png`. To change a sprite, edit or replace its PNG; to add one, drop in a file and use its path. Only art that's in use is there, so the folder is the list of what needs drawing.
+
+- **Sizes:** tiles are 16×16 px.
+- **Enemies** have a folder each, `enemies/<id>/` (`bosses/<id>/`): `idle.png`, a folder of numbered frames per animation the def names (`windup/0.png`, `windup/1.png`…; any number of frames, and a brain can stretch them over however long its wind-up lasts), and `held.png` for what it holds, drawn pointing up and gripped at its bottom centre. A held item with `grip: 'aimed'` sits out in front and swings around the body to wherever the enemy faces (a shield, a bat); `grip: 'carried'` stays upright in the hand. Everything but `idle.png` is a placeholder from `node scripts/enemy-placeholders.mjs` (wind-ups are the idle art squashed and tinted): draw over them freely; `--force` regenerates them.
+- **Furniture** has a folder with three views: `furniture/<id>/south.png` (facing the camera), `north.png` (facing away) and `side.png` (facing east, to the right; facing west mirrors it). Turning a piece (scroll while carrying it) steps through south, west, north and east; images are never rotated. Each view is drawn for its footprint in that facing (a 2×1 sofa's `south.png` is 32×16, its `side.png` 16×32), stands on the footprint's bottom edge and is centred, so it can be drawn taller or wider than its footprint. A missing `north` or `side` uses `south`, so pieces that can't turn only need `south.png`. The turnable pieces' north and side views are placeholders (the south view turned on its side): redraw them as real views. Plan: `docs/plans/furniture-art.md`.
+- **Nothing is ever scaled:** every art pixel is the same size on screen, in the world and the UI alike. The camera uses a whole number of screen pixels per art pixel: the largest that shows at least 320×160 art pixels (a 16:9 screen shows 320×180: the 240×144 room with a 40-pixel HUD column either side). The HUD is built on the same grid: icons at their art size, borders and gaps in whole art pixels, and the minimap drawn one canvas pixel per art pixel. Only text, and the zoomable full map, are exempt. Something that should look bigger needs bigger art: the boss is 32×32 (for now a doubled-up placeholder), and actors wider than 16 px get `fx/shadow_large`. Items and projectiles have their own smaller shadows (`fx/shadow_small`, `fx/shadow_tiny`).
+- **Animations:** a folder of numbered frames (`walk/0.png`, `walk/1.png`…). Add or remove frames freely.
+- **The player** is two layers on the same 16×16 canvas: a head (`player/head/<view>.png`) that faces the mouse and a body (`player/body/<view>/idle/0.png`… and `walk/0.png`…) that faces where you walk. The walk plays one frame per 0.4 tiles walked; standing still, the idle frames play one per 0.8 s, a light breath (rest, then the shoulders rising a pixel). The head stays still while the body walks and breathes. The five views are `front`, `front_diag`, `side`, `back_diag` and `back`, drawn facing right; facing left mirrors them. Standing still, the body turns to follow the head once it looks more than 90° away. Held items are gripped by the **bottom centre** of their icon: the main (L) item in the left hand, pointing at the mouse, and the off-hand (R) item upright in the right. Hand positions per view are in `HANDS` in `Player.ts`.
+- **Packing:** at startup every PNG is packed into one atlas texture, so the game draws from a single GPU texture. There's no build step: in dev, saving a PNG reloads the page.
+- **Floors and wallpaper** are one image per surface, named after its def: `floor/<id>.png` and `wallpaper/<id>.png`. Each is a completely filled 16×16 texture that must tile with itself in both directions; it's drawn as is, with no tint. Wallpaper is cut to the wall's face by the wall's masks (see [Wall art](#wall-art)).
+- **Generated, not drawn:** the light falloff (`engine/procedural.ts`).
 
 ### Wall art
 
-Walls are autotiled from four 8×8 pieces per material, drawn as a tile's top-left quarter and rotated into the other quarters: **outer corner** (open to the north and west), **edge** (open to the north; must tile horizontally with itself), **inner corner** (only the north-west diagonal open) and **fill**. That covers room edges and corners, lone pillars, junctions, thick blocks and L-shapes joined to the room's walls. Each sheet lives at `apps/client/public/assets/walls/<set>.png` (32×16): the pieces in the top row, and below each one a mask of where wallpaper replaces it. The mask also tells the shadows how deep the face is: the face runs from the floor at the open edge up to the wall's top at the first unmasked row past it. The current sheets are placeholders from `node scripts/wall-placeholders.mjs`, so draw over them freely. Pass `--force` to regenerate them.
+Walls are autotiled from four 8×8 pieces per material, drawn as a tile's top-left quarter and rotated into the other quarters: **outer corner** (open to the north and west), **edge** (open to the north; must tile horizontally with itself), **inner corner** (only the north-west diagonal open) and **fill** (the enclosed top; the one piece that's never rotated, so a texture on it runs the same way everywhere and must tile with itself). That covers room edges and corners, lone pillars, junctions, thick blocks and L-shapes joined to the room's walls. Each wall has its own folder, named after its obstacle: `apps/client/art/walls/<obstacle id>/` holds `outer.png`, `edge.png`, `inner.png` and `fill.png` (8×8 each), and next to a piece an optional `<piece>_mask.png` of where wallpaper replaces it (a piece without a mask takes no paper). The edge's mask also tells the shadows how deep the face is: the face runs from the floor at the open edge up to the wall's top at the first unmasked row past it. If the edge has a line along its open side (its top row), the inner corner's top-left pixel must carry it too, unmasked, or the line breaks where two walls meet in a room's corner. The backrooms walls (`backrooms_wall`, and `backrooms_wall_short`, a copy of it) are drawn by hand. The concrete, timber and drywall pieces come from `node scripts/wall-placeholders.mjs`, which follows the backrooms layout and masks; draw over them freely. `--force` regenerates them, overwriting any edits.
 
 New *mechanics* are small modules in registries:
 
-- `behaviors/`: enemy movement and attack behaviors
+- `behaviors/`: enemy brains (`enemies/<id>.ts`, one per enemy), built from `steering.ts` and `actions.ts`
 - `actions/tools.ts`: renovation actions
-- `actions/effects.ts`: pickup and passive effects
+- `actions/effects.ts`: pickup effects
 - `actions/triggers.ts`: tile triggers
 
 ### World model
@@ -109,4 +167,4 @@ Room-independent state (future NPCs, cooking timers) goes in `globals` and is ca
 
 ## Credits
 
-Art: [Kenney](https://kenney.nl) — *Tiny Dungeon* and *Roguelike Indoors* (CC0). Licenses are in `apps/client/public/assets/*/License.txt`. Other sprites are drawn procedurally in `apps/client/src/engine/procedural.ts`.
+Art: [Kenney](https://kenney.nl) — *Tiny Dungeon* and *Roguelike Indoors* (CC0), cut into `apps/client/art/`; their licenses are in `apps/client/art/LICENSE-kenney-*.txt`. The rest of the placeholder art was drawn in code and exported to the same folders.

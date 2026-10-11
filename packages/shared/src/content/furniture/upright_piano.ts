@@ -4,7 +4,7 @@ export default {
   id: 'upright_piano',
   name: 'Upright Piano',
   size: { w: 2, h: 1 },
-  sprite: { tiles: [['ri:239', 'ri:240']] },
+  sprite: 'furniture/upright_piano',
   rotatable: true,
   height: 1.1,
   blocksMovement: ['walk'],

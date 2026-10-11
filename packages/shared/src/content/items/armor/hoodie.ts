@@ -5,6 +5,6 @@ export default {
   kind: 'armor',
   name: 'Hoodie',
   description: 'Grants 1 armor heart. Breaks when depleted.',
-  icon: 'proc:armor:leather',
+  icon: 'items/armor/hoodie',
   halves: 2,
 } satisfies ArmorDef;

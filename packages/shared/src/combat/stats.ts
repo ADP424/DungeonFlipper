@@ -12,7 +12,7 @@ export const BASE_STATS: Record<StatName, number> = {
 };
 
 /**
- * Base values plus stacked modifiers grouped by source (a passive, the armor, "shield raised", …).
+ * Base values plus stacked modifiers grouped by source (the armor, "shield raised", …).
  * value = (base + Σadd) × Πmul
  */
 export class Stats {

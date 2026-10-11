@@ -5,7 +5,7 @@ export default {
   id: 'water_main',
   name: 'Water Main',
   size: { w: 1, h: 1 },
-  sprite: 'proc:water_main',
+  sprite: 'furniture/water_main',
   rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

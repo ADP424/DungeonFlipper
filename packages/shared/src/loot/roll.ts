@@ -1,19 +1,19 @@
 import type { Rng } from '../core/rng';
-import type { LootEntry, LootTableDef } from '../content/types';
+import type { LootDrop, LootEntry } from '../content/types';
 
 export type LootResult =
   | { kind: 'item'; item: string }
   | { kind: 'cash'; amount: number };
 
 /**
- * Roll a loot table:
+ * Roll an enemy's loot:
  *  - every drop rolls independently against its `chance`;
  *  - a passing drop picks exactly one of its entries by their individual chances;
  *  - leftover probability (entries summing below 1) means that drop yields nothing.
  */
-export function rollLoot(table: LootTableDef, rng: Rng): LootResult[] {
+export function rollLoot(drops: LootDrop[], rng: Rng): LootResult[] {
   const out: LootResult[] = [];
-  for (const drop of table.drops) {
+  for (const drop of drops) {
     if (!(rng.next() < drop.chance)) continue;
     const entry = pickEntry(drop.entries, rng.next());
     if (!entry) continue;

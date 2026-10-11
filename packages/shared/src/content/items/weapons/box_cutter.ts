@@ -5,7 +5,7 @@ export default {
   kind: 'weapon',
   name: 'Box Cutter',
   description: 'A quick, short slash right in front of you.',
-  icon: 'td:103',
+  icon: 'items/weapons/box_cutter',
   attack: {
     type: 'melee',
     pattern: 'stab',

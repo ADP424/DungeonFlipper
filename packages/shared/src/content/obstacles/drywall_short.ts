@@ -3,7 +3,7 @@ import type { ObstacleDef } from '../types';
 export default {
   id: 'drywall_short',
   name: 'Low Drywall',
-  sprite: 'proc:short_wall:plaster',
+  sprite: 'obstacles/drywall_short',
   blocksMovement: ['walk'],
   blocksProjectiles: ['straight'],
   height: 'short',
@@ -11,5 +11,5 @@ export default {
   material: 'plaster',
   renovate: ['demolish'],
   connectGroup: 'wall',
-  autotile: { set: 'plaster_short', joins: ['wall'] },
+  autotile: { set: 'drywall_short', joins: ['wall'] },
 } satisfies ObstacleDef;

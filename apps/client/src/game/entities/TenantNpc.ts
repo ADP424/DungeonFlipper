@@ -3,8 +3,8 @@ import { moveAndCollide } from '../../engine/collision';
 import type { Game } from '../Game';
 import { Actor } from './Entity';
 
-/** Placeholder looks (Tiny Dungeon characters), picked per tenant. */
-const LOOKS = ['td:84', 'td:85', 'td:86', 'td:87', 'td:88', 'td:96', 'td:97', 'td:99', 'td:100'];
+/** Looks (art/npcs/tenants/look_N.png), picked per tenant. */
+const LOOKS = Array.from({ length: 9 }, (_, i) => `npcs/tenants/look_${i + 1}`);
 
 /** A tenant's sprite: the same face in the world and in your phone's contacts. */
 export function tenantLook(id: string): string {
@@ -26,8 +26,12 @@ export class TenantNpc extends Actor {
   /** Where they stand at night (by their bed), if they have one. */
   bedSpot: { x: number; y: number } | null = null;
 
-  constructor(t: Tenant, x: number, y: number, unitTiles: string[]) {
-    super(tenantLook(t.id), 1, t.status === 'applicant' ? 0xe0e0f0 : 0xffffff);
+  /** Which member of the household (0 is who you deal with; 2+ are kids). */
+  readonly member: number;
+
+  constructor(t: Tenant, x: number, y: number, unitTiles: string[], member = 0) {
+    super(member ? tenantLook(`${t.id}:${member}`) : tenantLook(t.id), t.status === 'applicant' ? 0xe0e0f0 : 0xffffff);
+    this.member = member;
     this.tenantId = t.id;
     this.x = x;
     this.y = y;

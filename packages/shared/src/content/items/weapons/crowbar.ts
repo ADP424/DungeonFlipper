@@ -4,8 +4,8 @@ export default {
   id: 'crowbar',
   kind: 'weapon',
   name: 'Crowbar',
-  description: 'A trusty crowbar with a medium swing. With nothing alive in the room, it pries out low walls, and it pries barricades off whole, so you can put them up again (1 use each).',
-  icon: 'td:104',
+  description: 'A trusty crowbar with a medium swing. Hold it on a low wall to pry it out, or on a barricade to pry it off whole, so you can put it up again (1 use each).',
+  icon: 'items/weapons/crowbar',
   attack: {
     type: 'melee',
     pattern: 'arc',

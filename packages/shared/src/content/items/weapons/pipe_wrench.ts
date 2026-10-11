@@ -5,7 +5,7 @@ export default {
   kind: 'weapon',
   name: 'Pipe Wrench',
   description: 'Smashes the floor in front of you, knocking things back.',
-  icon: 'proc:mace',
+  icon: 'items/weapons/pipe_wrench',
   attack: {
     type: 'melee',
     pattern: 'smash',

@@ -120,18 +120,25 @@ export interface UnitStats {
   /** A live wire / pipe reaches the unit (P6). */
   power: boolean;
   water: boolean;
+  /** Sleeping spots (a bed 1, a double bed 2) and messy tiles (P7). */
+  sleeps: number;
+  mess: number;
 }
 
 export function unitStats(state: WorldState, unit: Unit): UnitStats {
   const tags: Record<string, number> = {};
   let beds = 0;
+  let sleeps = 0;
   const nets = utilityNets(state, unit.floor);
   for (const { f, roomId } of unit.furniture) {
     const def = furnitureReg.tryGet(f.defId);
     // A fixture that isn't supplied (a dark lamp) doesn't count for what it's meant to do.
     if (!fixtureSupplied(state, nets, roomId, f)) continue;
     for (const t of def?.tags ?? []) tags[t] = (tags[t] ?? 0) + 1;
-    if (def?.tags?.includes('bed')) beds++;
+    if (def?.tags?.includes('bed')) {
+      beds++;
+      sleeps += def.sleeps ?? 1;
+    }
   }
   const floors: Record<string, number> = {};
   const ls = new Layouts(state, unit.floor);
@@ -148,7 +155,7 @@ export function unitStats(state: WorldState, unit: Unit): UnitStats {
   const quiet = unit.rooms.every((id) => neighbours(floorState.rooms[id]!).every((n) => !state.rooms[n]?.monsters.length));
   const border = new Set<string>();
   for (const id of unit.rooms) for (const n of neighbours(floorState.rooms[id]!)) if (!unit.rooms.includes(n)) border.add(n);
-  const unsecured = [...border].filter((n) => !(state.rooms[n]?.ownerId === unit.ownerId && isSecure(state, n)));
+  const unsecured = [...border].filter((n) => !(state.rooms[n]?.ownerId && isSecure(state, n)));
   return {
     area: unit.tiles.size, beds, tags, floors,
     borderUnsecured: unsecured.length,
@@ -158,6 +165,8 @@ export function unitStats(state: WorldState, unit: Unit): UnitStats {
     connected: lobbyConnected(state, unit),
     power: tilesSupplied(nets, 'power', unit.tiles),
     water: tilesSupplied(nets, 'water', unit.tiles),
+    sleeps,
+    mess: [...unit.tiles].filter((k) => unit.rooms.some((id) => state.rooms[id]?.mess?.[k])).length,
   };
 }
 

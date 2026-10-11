@@ -5,6 +5,6 @@ export default {
   kind: 'pickup',
   name: 'Sandwich',
   description: 'Heals one heart.',
-  icon: 'proc:heart',
+  icon: 'items/pickups/sandwich',
   effect: { id: 'heal', params: { halves: 2 } },
 } satisfies PickupDef;

@@ -1,66 +1,119 @@
-// Generates placeholder wall autotile piece sheets in apps/client/public/assets/walls/.
-// Usage: node scripts/wall-placeholders.mjs [--force]   (existing sheets are kept unless --force)
+// Generates the built walls' autotile pieces in apps/client/art/walls/<wall>/, a folder per wall obstacle.
+// Usage: node scripts/wall-placeholders.mjs [--force]   (existing images are kept unless --force)
+// The backrooms walls are drawn by hand and aren't listed here; these follow their layout and masks.
 //
-// Sheet layout (32×16 px): row 0 holds four 8×8 pieces, row 1 their wallpaper masks.
-//   x 0  outer corner   exposed (open) on the north and west sides
-//   x 8  edge           exposed on the north side; must tile horizontally with itself
-//   x 16 inner corner   only the north-west diagonal is open
-//   x 24 fill           fully enclosed
-// Every piece is drawn as the top-left quarter of a tile; the game rotates it into the other quarters.
-// Mask pixels with alpha > 0 are where wallpaper replaces the face.
+// Each folder holds four 8×8 pieces, and a wallpaper mask next to each piece that has a face:
+//   outer.png  outer corner   exposed (open) on the north and west sides
+//   edge.png   edge           exposed on the north side; must tile horizontally with itself
+//   inner.png  inner corner   only the north-west diagonal is open
+//   fill.png   fully enclosed; drawn unturned, so it must tile with itself
+//   <piece>_mask.png          pixels with alpha > 0 are where wallpaper replaces the face
+// The other pieces are drawn as the top-left quarter of a tile; the game turns them into the other quarters.
 import { deflateSync } from 'node:zlib';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const OUT = join(dirname(fileURLToPath(import.meta.url)), '../apps/client/public/assets/walls');
+const OUT = join(dirname(fileURLToPath(import.meta.url)), '../apps/client/art/walls');
 const force = process.argv.includes('--force');
 
+/**
+ * Per material: `line` runs along both sides of the face, and `main` is the face (what shows without
+ * wallpaper) and the enclosed top, with texture drawn over it. `face` is the texture of a face, six
+ * rows from the open side inward, running along the wall (8 px, must tile); `fill` the texture of the
+ * enclosed top (8×8, must tile). Texture letters index `tex`; '.' is `main`.
+ */
+const PLAIN = Array(8).fill('........');
 const MATERIALS = {
-  stone: { cap: 0x4a5060, face: 0x8a93a6, hi: 0xb4bccb, line: 0x2a2e38, grain: 0x5a6273 },
-  wood: { cap: 0x5a3a20, face: 0x9a6a3c, hi: 0xc08a54, line: 0x2e1c0e, grain: 0x6a4424 },
-  plaster: { cap: 0x8e8574, face: 0xd8cfbf, hi: 0xf0e9dc, line: 0x5a5244, grain: 0xa89e8c },
+  drywall: { line: 0xb0aca1, main: 0xe5e3dc, tex: {}, face: PLAIN, fill: PLAIN },
+  concrete: {
+    line: 0xb0aca1, main: 0x898f95, tex: { d: 0x656a6e, l: 0xacb3bb },
+    face: [
+      '..d.....',
+      '.....l..',
+      'l.....d.',
+      '...d....',
+      '.l......',
+      '.....d.l',
+    ],
+    fill: [
+      '.....l..',
+      '.d......',
+      '..l...d.',
+      '....d...',
+      '........',
+      '..d....l',
+      '...l.d..',
+      'l.......',
+    ],
+  },
+  timber: {
+    line: 0x755036, main: 0x755036, tex: { m: 0x815e3e, h: 0xc18e5d },
+    face: [
+      '........',
+      'mmmmmhhm',
+      '........',
+      '..mmmm..',
+      'hmm...mm',
+      '........',
+    ],
+    fill: [
+      '........',
+      'mmmmmhhm',
+      '........',
+      '..mmm...',
+      'm.....mm',
+      '........',
+      'mmhhmm..',
+      '........',
+    ],
+  },
 };
 
-/** Pixel role at (x, y) of a piece, given the face depth (outline + face rows). */
-function role(piece, x, y, depth) {
-  const band = (d) => (d === 0 ? 'line' : d < depth ? 'face' : d === depth ? 'hi' : null);
-  if (piece === 'edge') return band(y) ?? 'cap';
+/** Wall obstacle id → its material. Low and full-height walls share a look (and the backrooms masks). */
+const WALLS = {
+  concrete_wall: 'concrete', concrete_wall_short: 'concrete',
+  timber_wall: 'timber', timber_wall_short: 'timber',
+  drywall: 'drywall', drywall_short: 'drywall',
+};
+
+/**
+ * What a pixel of a piece is, laid out as on the backrooms wall: 'line', the enclosed top
+ * (`fill`), or face: `d` rows in from the open side (1–6) and `a` px along the wall.
+ */
+function role(piece, x, y) {
+  if (piece === 'fill') return { fill: true };
+  if (piece === 'edge') return y === 0 || y === 7 ? 'line' : { d: y, a: x };
   if (piece === 'outer') {
-    const r = band(Math.min(x, y));
-    return r ?? 'cap';
+    if (x === 0 || y === 0 || (x === 7 && y === 7)) return 'line';
+    return { d: Math.min(x, y), a: Math.max(x, y) };
   }
-  if (piece === 'inner') {
-    // A small mitred corner where the neighbours' faces meet; no outline (it would cut their faces).
-    if (x <= depth && y <= depth) return x === depth || y === depth ? 'hi' : 'face';
-    return 'cap';
-  }
-  return 'cap';
+  // Inner corner: the neighbours' faces meet, and their lines turn the corner at its first pixel.
+  if ((x === 0 && y === 0) || x === 7 || y === 7) return 'line';
+  return { d: Math.max(x, y), a: Math.min(x, y) };
 }
 
-function sheet(m, short) {
-  const W = 32, H = 16;
-  const px = new Uint8Array(W * H * 4);
-  const set = (x, y, c, a = 255) => {
-    const i = (y * W + x) * 4;
-    px[i] = (c >> 16) & 255; px[i + 1] = (c >> 8) & 255; px[i + 2] = c & 255; px[i + 3] = a;
+/** One piece's image and its wallpaper mask (null when the piece has no face), as PNGs. */
+function images(piece, m) {
+  const S = 8;
+  const art = new Uint8Array(S * S * 4), mask = new Uint8Array(S * S * 4);
+  const set = (px, x, y, c) => {
+    const i = (y * S + x) * 4;
+    px[i] = (c >> 16) & 255; px[i + 1] = (c >> 8) & 255; px[i + 2] = c & 255; px[i + 3] = 255;
   };
-  // Faces are deep enough to show shadows climbing them; low walls are shallower, with a lighter cap.
-  const depth = short ? 3 : 6;
-  const cap = short ? m.grain : m.cap;
-  ['outer', 'edge', 'inner', 'fill'].forEach((piece, n) => {
-    for (let y = 0; y < 8; y++) {
-      for (let x = 0; x < 8; x++) {
-        const r = role(piece, x, y, depth);
-        let c = r === 'cap' ? cap : m[r];
-        // Sparse grain on the cap so tiled walls read as material, kept away from piece borders.
-        if (r === 'cap' && ((x * 7 + y * 3) % 11 === 0) && x > 0 && y > 0) c = short ? m.cap : m.grain;
-        set(n * 8 + x, y, c);
-        if (r === 'face') set(n * 8 + x, 8 + y, 0xffffff);
-      }
+  const tex = (ch) => m.tex[ch] ?? m.main;
+  let faced = false;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const r = role(piece, x, y);
+      if (r === 'line') { set(art, x, y, m.line); continue; }
+      if (r.fill) { set(art, x, y, tex(m.fill[y][x])); continue; }
+      set(art, x, y, tex(m.face[r.d - 1][r.a]));
+      set(mask, x, y, 0xffffff);
+      faced = true;
     }
-  });
-  return png(W, H, px);
+  }
+  return { art: png(S, S, art), mask: faced ? png(S, S, mask) : null };
 }
 
 function png(w, h, rgba) {
@@ -94,12 +147,17 @@ function crc32(buf) {
   return ~c >>> 0;
 }
 
-mkdirSync(OUT, { recursive: true });
-for (const [name, m] of Object.entries(MATERIALS)) {
-  for (const short of [false, true]) {
-    const file = join(OUT, `${name}${short ? '_short' : ''}.png`);
-    if (existsSync(file) && !force) { console.log(`keep  ${file}`); continue; }
-    writeFileSync(file, sheet(m, short));
-    console.log(`wrote ${file}`);
+function write(file, data) {
+  if (existsSync(file) && !force) { console.log(`keep  ${file}`); return; }
+  writeFileSync(file, data);
+  console.log(`wrote ${file}`);
+}
+
+for (const [wall, material] of Object.entries(WALLS)) {
+  mkdirSync(join(OUT, wall), { recursive: true });
+  for (const piece of ['outer', 'edge', 'inner', 'fill']) {
+    const { art, mask } = images(piece, MATERIALS[material]);
+    write(join(OUT, wall, `${piece}.png`), art);
+    if (mask) write(join(OUT, wall, `${piece}_mask.png`), mask);
   }
 }

@@ -5,6 +5,6 @@ export default {
   kind: 'pickup',
   name: 'Cash',
   description: 'Crumpled bills.',
-  icon: 'proc:cash',
+  icon: 'items/pickups/cash',
   effect: { id: 'cash' },
 } satisfies PickupDef;

@@ -1,5 +1,5 @@
 import type {
-  EnemyDef, FurnitureDef, HealthLayerDef, ItemDef, LootTableDef, ObstacleDef,
+  EnemyDef, FurnitureDef, HealthLayerDef, ItemDef, ObstacleDef,
   ProjectileDef, RoomTemplateDef, SurfaceDef,
 } from './types';
 
@@ -43,6 +43,5 @@ export const obstacles = new Registry<ObstacleDef>('obstacle');
 export const furniture = new Registry<FurnitureDef>('furniture');
 export const surfaces = new Registry<SurfaceDef>('surface');
 export const projectiles = new Registry<ProjectileDef>('projectile');
-export const lootTables = new Registry<LootTableDef>('loot table');
 export const roomTemplates = new Registry<RoomTemplateDef>('room template');
 export const healthLayers = new Registry<HealthLayerDef>('health layer');

@@ -1,0 +1,35 @@
+import type { RoomTemplateDef } from '../types';
+
+export default {
+  id: 'great_hall_shift_change',
+  cells: [{ cx: 0, cy: 0 }, { cx: 1, cy: 0 }, { cx: 0, cy: 1 }, { cx: 1, cy: 1 }],
+  tags: ['normal'],
+  difficulty: 2.5,
+  map: [
+    'W.................W.........',
+    '..##...................##...',
+    '..##......s.....s......##...',
+    '............................',
+    '.......OOOO......OOOO.......',
+    '.......OOOO..h...OOOO.......',
+    '....i....................i..',
+    '...........H....H...........',
+    '.............g..............',
+    '....i....................i..',
+    '.......OOOO......OOOO.......',
+    '.......OOOO..s...OOOO.......',
+    '............................',
+    '..##......g............##...',
+    '..##...................##...',
+    '...........................B',
+  ],
+  legend: {
+    g: { enemy: 'security_guard' },
+    h: { enemy: 'hr_rep' },
+    i: { enemy: 'intern' },
+    s: { enemy: 'stapler_clerk' },
+    B: { furniture: 'storage_box' },
+    H: { furniture: 'space_heater' },
+    W: { furniture: 'work_light' },
+  },
+} satisfies RoomTemplateDef;

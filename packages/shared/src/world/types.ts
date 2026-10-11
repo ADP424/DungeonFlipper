@@ -38,7 +38,7 @@ export interface RoomInfo {
   cells: CellCoord[];
   doors: DoorInfo[];
   tags: RoomTag[];
-  /** Fixed at generation: floor baseline + distance from the lobby (see world/difficulty.ts). */
+  /** Its template's difficulty, as designed: the barricades its doors need, and how much it spills. */
   difficulty: number;
   /**
    * True once the room's door list is final (the player has been inside). Rooms behind its doors
@@ -93,8 +93,6 @@ export interface MonsterRecord {
   hpFrac?: number;
   /** Template spawn ("mx,my") the monster stands on when the room loads. */
   spawnId?: string;
-  /** Health multiplier fixed at generation (difficulty beyond the strongest content); absent = 1. */
-  hpMul?: number;
   /** Door tile ("x,y") it came in through, for monsters that spilled in: placed just inside it. */
   door?: string;
 }
@@ -128,6 +126,8 @@ export interface RoomState {
   groundItems: GroundItem[];
   /** "x,y" (global) → pipe / wire segments laid there (P6). Absent = none anywhere. */
   utilities?: Record<string, UtilityTile>;
+  /** "x,y" (global) → how messy the tile is, 1–3 (P7). */
+  mess?: Record<string, number>;
 }
 
 export interface Hotbar {
@@ -147,12 +147,10 @@ export interface PlayerState {
   x: number;
   y: number;
   cash: number;
-  /** Current red health in half-hearts (max is derived from base + passives). */
+  /** Current red health in half-hearts (max is `baseRedMaxHalves` plus what's worn). */
   redHalves: number;
   baseRedMaxHalves: number;
   hotbar: Hotbar;
-  /** Passive item def ids, in pickup order. */
-  passives: string[];
   /** Furniture currently being carried overhead. */
   carrying: FurniturePlacement | null;
   deaths: number;

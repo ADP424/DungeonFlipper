@@ -13,7 +13,7 @@ const FLUSH_INTERVAL_MS = 15000;
  * on its next load, so testing starts from a new game. Pair it with deleting the dev server's
  * database (`apps/server/data/`), or the old world would come back from the server.
  */
-const DEV_SAVE_EPOCH = 8;
+const DEV_SAVE_EPOCH = 12;
 
 function lsGet(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }

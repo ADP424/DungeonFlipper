@@ -39,7 +39,7 @@ const slotKinds: Record<'main' | 'off' | 'armor', ItemKind[]> = {
 export function canHold(slot: HotbarSlotId, inst: ItemInstance | null): boolean {
   if (!inst) return true;
   const kind = itemDef(inst).kind;
-  if (kind === 'passive' || kind === 'pickup') return false;
+  if (kind === 'pickup') return false;
   if (typeof slot === 'number') return true;
   return slotKinds[slot].includes(kind);
 }

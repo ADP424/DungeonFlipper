@@ -8,6 +8,6 @@ export default {
   lifetime: 2,
   lobHeight: 1.6,
   splash: 1.25,
-  sprite: 'proc:flask',
+  sprite: 'projectiles/spray_bottle',
   light: { radius: 1.5, color: 0xff9040, intensity: 0.5 },
 } satisfies ProjectileDef;

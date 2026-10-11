@@ -5,7 +5,7 @@ export default {
   id: 'generator',
   name: 'Generator',
   size: { w: 2, h: 1 },
-  sprite: { tiles: [['proc:generator_l', 'proc:generator_r']] },
+  sprite: 'furniture/generator',
   rotatable: false,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

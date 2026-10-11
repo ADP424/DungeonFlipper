@@ -2,7 +2,7 @@ import type { ItemInstance } from '@df/shared';
 import type { Game } from '../Game';
 
 /**
- * Effects referenced by id from PickupDef.effect and PassiveDef.effects.
+ * Effects referenced by id from PickupDef.effect.
  * A pickup effect returns false to refuse being consumed (e.g. hearts at full health).
  */
 export type Effect = (game: Game, params: Record<string, unknown>, item: ItemInstance) => boolean;

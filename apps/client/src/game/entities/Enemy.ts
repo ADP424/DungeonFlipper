@@ -1,57 +1,116 @@
-import { TILE_PX, registry, type EnemyDef } from '@df/shared';
+import { Sprite } from 'pixi.js';
+import { TILE_PX, angleDiff, registry, type EnemyAnimDef, type EnemyDef } from '@df/shared';
+import { frameKeys, tex } from '../../engine/assets';
 import { moveAndCollide } from '../../engine/collision';
-import { attackBehaviors, movementBehaviors, type BehaviorState } from '../behaviors';
+import { brains, type Brain } from '../behaviors';
 import type { Game } from '../Game';
-import { Actor } from './Entity';
+import { Actor, artPixel } from './Entity';
+
+/** Frames per second of an animation that doesn't say. */
+const ANIM_FPS = 8;
+/** Draw order inside an enemy's view: a held item is behind the body when it's held away from the camera. */
+const Z = { shadow: -2, behind: -1, body: 0, front: 1 };
+/** Where a carried item sits (px from the body's centre, on the side it faces), and how far it leans out. */
+const CARRY = { x: 4, y: 4, lean: 0.25 };
 
 export class Enemy extends Actor {
   readonly def: EnemyDef;
   hp: number;
   maxHp: number;
-  /** Template spawn id (persistent kill tracking). Summoned enemies have none. */
   /** Roster record id; absent for transient enemies (summons), which are never persisted. */
   readonly monsterId?: string;
   /** The room it's in (its roster's owner); updated as it walks between rooms of an area. */
   roomId = '';
-  readonly moveState: BehaviorState = {};
-  readonly attackStates: BehaviorState[];
+  private readonly brain: Brain;
+  private readonly brainState: unknown;
   /** While airborne (hopping, etc.) the enemy ignores hazards and doesn't deal contact damage. */
   airborne = false;
   /** Set when the last move hit a wall. */
   bumped = false;
-  /** Fade/teleport visibility, 0..1. */
+  /** Fade/teleport visibility, 0..1. Mostly faded, it can't be hit and doesn't hurt. */
   alpha = 1;
-  /** Telegraph glow while winding up an attack. */
-  telegraph = 0;
+  /** Which way it faces (radians): toward the player, unless its brain says otherwise this frame. */
+  facing = Math.PI / 2;
+  /** Hits arriving within this many radians of its front are stopped (a shield); 0 unless its brain raises one this frame. */
+  blockArc = 0;
+  /** Whether touching it hurts this frame (its def's `contactDamage`); a brain can switch it off. */
+  contact = true;
   private hazardCd = 0;
   age = 0;
+  /** A realtor or their guard (P8): whose people they are. */
+  realtorId?: string;
+  /** Thugs on a raid for this realtor. */
+  raidOf?: string;
+  /** The enemy (entity id) that called this one in. */
+  summonedBy?: number;
+  /** Stands around minding its own business until provoked (a realtor's office). */
+  passive = false;
+  /** The animation showing, and the one its brain asked for this frame. */
+  private anim: { name: string; def: EnemyAnimDef; t: number; over?: number } | null = null;
+  private posed: { name: string; over?: number } | null = null;
+  private readonly held?: Sprite;
 
-  constructor(defId: string, x: number, y: number, opts: { monsterId?: string; hpMul?: number; hpFrac?: number } = {}) {
+  constructor(defId: string, x: number, y: number, opts: { monsterId?: string; hpFrac?: number } = {}) {
     const def = registry.enemies.get(defId);
-    super(def.sprite, def.scale ?? 1, def.tint);
+    super(def.sprite, def.tint);
     this.def = def;
     this.x = x;
     this.y = y;
     this.radius = def.radius;
     this.team = 'enemy';
     this.movementKind = def.movementKind;
-    this.maxHp = def.hp * (opts.hpMul ?? 1);
+    this.maxHp = def.hp;
     this.hp = this.maxHp * (opts.hpFrac ?? 1);
     this.monsterId = opts.monsterId;
     this.light = def.light;
-    this.attackStates = def.attacks.map(() => ({}));
+    this.brain = brains[def.ai.id]!;
+    this.brainState = this.brain.init(def.ai.params ?? {});
     if (def.movementKind === 'fly') this.shadow.alpha = 0.6;
+    if (def.held) {
+      // Gripped by its bottom centre, like the player's items.
+      this.held = new Sprite(tex(def.held.sprite));
+      this.held.anchor.set(0.5, 1);
+      this.view.sortableChildren = true;
+      this.shadow.zIndex = Z.shadow;
+      this.sprite.zIndex = Z.body;
+      this.view.addChild(this.held);
+    }
+  }
+
+  /** Can be hit: alive and not faded out. */
+  get targetable(): boolean {
+    return !this.dead && this.alpha >= 0.5;
+  }
+
+  /**
+   * Show one of the def's animations this frame (call it every frame it should show; without a call
+   * the enemy is back to its idle art). `over`: spread the frames over this many seconds, so a
+   * wind-up's art keeps pace with however long the wind-up is.
+   */
+  pose(name: string, over?: number): void {
+    this.posed = { name, over };
+  }
+
+  /** Whether a hit travelling along (dirX, dirY) lands on its shield. */
+  blocks(dirX: number, dirY: number): boolean {
+    if (this.blockArc <= 0 || (!dirX && !dirY)) return false;
+    return Math.abs(angleDiff(Math.atan2(-dirY, -dirX), this.facing)) <= this.blockArc / 2;
   }
 
   update(game: Game, dt: number): void {
     this.age += dt;
     this.flash = Math.max(0, this.flash - dt);
+    // Each frame starts from rest; the brain says what's different (see `Brain`).
     this.vx = this.vy = 0;
-    const move = movementBehaviors[this.def.movement.id];
-    move?.({ game, e: this, dt, params: this.def.movement.params ?? {}, state: this.moveState });
-    this.def.attacks.forEach((a, i) => {
-      attackBehaviors[a.id]?.({ game, e: this, dt, params: a.params ?? {}, state: this.attackStates[i]! });
-    });
+    this.blockArc = 0;
+    this.contact = true;
+    this.posed = null;
+    const pl = game.player;
+    if (!this.passive) {
+      this.facing = Math.atan2(pl.y - this.y, pl.x - this.x);
+      this.brain.update({ game, e: this, dt, params: this.def.ai.params ?? {} }, this.brainState);
+    }
+    this.animate(dt);
 
     const kn = this.knockStep(dt);
     const blocked = game.room.blockerFor(this.movementKind, 'enemy');
@@ -59,6 +118,11 @@ export class Enemy extends Actor {
     this.bumped = res.hitX || res.hitY;
     this.x = res.x;
     this.y = res.y;
+
+    if (!this.passive && this.def.contactDamage && this.contact && !this.airborne && this.alpha >= 0.5
+      && Math.hypot(pl.x - this.x, pl.y - this.y) < pl.radius + this.radius) {
+      game.hurtPlayer(this.def.contactDamage, this.x, this.y);
+    }
 
     // Hazards (spikes) hurt walkers that are on the ground.
     this.hazardCd -= dt;
@@ -71,13 +135,52 @@ export class Enemy extends Actor {
     }
   }
 
+  /** Start, continue or drop the animation the brain posed, and show its frame. */
+  private animate(dt: number): void {
+    const want = this.posed;
+    const def = want && this.def.anims?.[want.name];
+    if (!want || !def) {
+      this.anim = null;
+      this.setSprite(this.def.sprite);
+      return;
+    }
+    if (this.anim?.name === want.name) this.anim.t += dt;
+    else this.anim = { name: want.name, def, t: 0, over: want.over };
+    const frames = frameKeys(def.frames);
+    const { t, over } = this.anim;
+    const at = Math.floor(over ? (t / over) * frames.length : t * (def.fps ?? ANIM_FPS));
+    this.setSprite(frames[def.loop ? at % frames.length : Math.min(frames.length - 1, at)]!);
+  }
+
   override syncView(): void {
     super.syncView();
     this.sprite.alpha = this.alpha;
     this.shadow.alpha = this.alpha * (this.movementKind === 'fly' ? 0.5 : 1);
-    if (this.telegraph > 0 && this.flash <= 0) this.sprite.tint = Math.floor(this.telegraph * 10) % 2 ? 0xffffff : 0xffa0a0;
-    if (this.movementKind === 'fly') this.sprite.y -= 4 + Math.sin(this.age * 6) * 1.5;
+    if (this.movementKind === 'fly') this.sprite.y -= Math.round(4 + Math.sin(this.age * 6) * 1.5);
     this.view.zIndex = this.y + (this.z > 0 ? 0.01 : 0);
-    void TILE_PX;
+    this.syncHeld();
+  }
+
+  /**
+   * The held item: `aimed` ones sit out in front and swing around the body with its facing (pointing
+   * that way); `carried` ones stay upright in the hand on the side it faces. Either is drawn behind
+   * the body when held away from the camera.
+   */
+  private syncHeld(): void {
+    const held = this.held;
+    if (!held) return;
+    const lift = -artPixel(this.z);
+    const away = Math.sin(this.facing) < -0.3;
+    held.alpha = this.alpha;
+    held.zIndex = away ? Z.behind : Z.front;
+    if (this.def.held!.grip === 'aimed') {
+      const reach = this.radius * TILE_PX;
+      held.position.set(Math.round(Math.cos(this.facing) * reach), Math.round(Math.sin(this.facing) * reach) + lift);
+      held.rotation = this.facing + Math.PI / 2;
+    } else {
+      const side = Math.cos(this.facing) < 0 ? -1 : 1;
+      held.position.set(CARRY.x * side, CARRY.y + lift);
+      held.rotation = CARRY.lean * side;
+    }
   }
 }

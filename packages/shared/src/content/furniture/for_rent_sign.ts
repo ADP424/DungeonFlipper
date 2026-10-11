@@ -5,7 +5,7 @@ export default {
   id: 'for_rent_sign',
   name: 'For Rent Sign',
   size: { w: 1, h: 1 },
-  sprite: 'proc:sign',
+  sprite: 'furniture/for_rent_sign',
   rotatable: false,
   height: 0.9,
   blocksMovement: ['walk'],

@@ -6,6 +6,6 @@ export default {
   speed: 6,
   radius: 0.18,
   lifetime: 3,
-  sprite: 'proc:bone',
+  sprite: 'projectiles/clipboard',
   orient: true,
 } satisfies ProjectileDef;

@@ -1,6 +1,9 @@
+import { TIP_BAR_W, barWidth } from './pixels';
 import {
-  MAX_OFFER, describePref, getClock, getTenants, haggle, prefScore, roomLabel, tenantUnit, unitStats, valuation,
+  FAIR_EVICT_MOOD, NOTICE_DAYS, describePref, getClock, getTenants, haggle, householdLabel, householdSize, offerCap, prefScore, roomLabel,
+  tenantUnit, unitStats, valuation,
   type Tenant,
+  cashText,
 } from '@df/shared';
 import type { Game } from '../game/Game';
 
@@ -76,10 +79,14 @@ export class TenantPanel {
 
     el('div', 'tenant-line', p).textContent = t.status === 'applicant'
       ? `Applicant (tier ${t.tier}) · looking at ${where}`
-      : `Tenant (tier ${t.tier}) · $${t.rent}/day · ${where}`;
+      : `Tenant (tier ${t.tier}) · ${cashText(t.rent)}/day · ${where}`;
+    const people = householdSize(t) > 1 && t.members ? ` (${t.members.join(', ')})` : '';
+    el('div', 'tenant-line', p).textContent = `${householdLabel(t)}${people} · needs ${householdSize(t)} sleeping spot${householdSize(t) > 1 ? 's' : ''}`;
+    if (t.arrears) el('div', 'tenant-line bad', p).textContent = `Holding back ${cashText(t.arrears)} in rent until things improve.`;
+    if (t.evictDay !== undefined) el('div', 'tenant-line bad', p).textContent = `Under notice: leaving at the end of day ${t.evictDay}.`;
     const mood = el('div', 'tip-bar tenant-mood', p);
     const fill = el('div', '', mood);
-    fill.style.width = `${Math.max(0, Math.min(100, t.mood))}%`;
+    fill.style.width = barWidth(t.mood / 100, TIP_BAR_W);
     fill.style.background = t.mood > 60 ? '#7ad05a' : t.mood > 30 ? '#e0b040' : '#e05040';
 
     el('div', 'phone-section', p).textContent = 'What they want';
@@ -98,7 +105,7 @@ export class TenantPanel {
     if (s) {
       el('div', 'phone-section', p).textContent = 'The place';
       const facts = [
-        `${s.area} tiles`, `${s.beds} bed${s.beds === 1 ? '' : 's'}`,
+        `${s.area} tiles`, `${s.beds} bed${s.beds === 1 ? '' : 's'} (sleeps ${s.sleeps})`, ...(s.mess ? [`${s.mess} messy spot${s.mess === 1 ? '' : 's'}`] : []),
         s.secure ? 'secure' : 'not secure', s.connected ? 'reachable from the lobby' : 'cut off from the lobby',
         s.quiet ? 'quiet' : 'monsters next door',
         s.power ? 'power' : 'no power', s.water ? 'running water' : 'no water',
@@ -117,13 +124,13 @@ export class TenantPanel {
     const slider = el('input', '', row);
     slider.type = 'range';
     slider.min = '1';
-    slider.max = String(MAX_OFFER);
+    slider.max = String(offerCap(t));
     slider.value = String(this.offer);
     const label = el('span', '', row);
-    label.textContent = `$${this.offer}/day`;
+    label.textContent = `${cashText(this.offer)}/day`;
     slider.addEventListener('input', () => {
       this.offer = Number(slider.value);
-      label.textContent = `$${this.offer}/day`;
+      label.textContent = `${cashText(this.offer)}/day`;
     });
     const btns = el('div', 'phone-apps', p);
 
@@ -141,12 +148,12 @@ export class TenantPanel {
           return this.close();
         }
         this.counter = r.result === 'counter' ? r.counter! : null;
-        this.reaction = r.result === 'counter' ? `"Hmm. How about $${r.counter} a day?"` : `"That's way too much."`;
+        this.reaction = r.result === 'counter' ? `"Hmm. How about ${cashText(r.counter!)} a day?"` : `"That's way too much."`;
         set({ strikes });
       });
       if (this.counter !== null) {
         const deal = el('button', 'phone-app', btns);
-        deal.textContent = `Deal at $${this.counter}`;
+        deal.textContent = `Deal at ${cashText(this.counter)}`;
         deal.addEventListener('click', () => this.moveIn(t, this.counter!, 45 - 10 * t.strikes));
       }
     } else {
@@ -162,6 +169,31 @@ export class TenantPanel {
           set({ mood: Math.max(0, t.mood - 15) });
         }
       });
+      // Eviction: three days' notice. Fair if they owe rent or are miserable; otherwise word gets around.
+      if (t.evictDay === undefined) {
+        const evict = el('button', 'phone-app', btns);
+        evict.textContent = 'Evict';
+        const fair = !!t.arrears || t.mood < FAIR_EVICT_MOOD;
+        evict.title = fair ? 'They owe rent or are miserable: a fair eviction' : 'They pay and they\'re happy enough: evicting them will cost reputation';
+        evict.addEventListener('click', () => {
+          g.ui.confirm(
+            `Evict ${t.name}?`,
+            `They'll have ${NOTICE_DAYS} days to leave. ${fair ? 'Nobody will blame you.' : "They've done nothing wrong: this will hurt your reputation."}`,
+            'Give notice',
+            () => {
+              this.reaction = fair ? '"Fine. This place was a dump anyway."' : '"What? We always paid on time!"';
+              set({ evictDay: today + NOTICE_DAYS - 1, evictFair: fair, mood: Math.max(0, t.mood - 20) });
+            },
+          );
+        });
+      } else {
+        const cancel = el('button', 'phone-app', btns);
+        cancel.textContent = 'Cancel eviction';
+        cancel.addEventListener('click', () => {
+          this.reaction = '"Oh. Well. Thanks, I guess."';
+          set({ evictDay: undefined, evictFair: undefined });
+        });
+      }
       const talk = el('button', 'phone-app', btns);
       talk.textContent = 'Talk';
       talk.disabled = t.lastTalk === today || t.known >= t.prefs.length;
@@ -177,7 +209,7 @@ export class TenantPanel {
   private moveIn(t: Tenant, rent: number, mood: number): void {
     const g = this.game;
     g.dispatch({ type: 'tenantSet', tenant: { ...t, status: 'living', rent, mood: Math.max(10, Math.min(100, Math.round(mood))), strikes: 0, since: getClock(g.session.state).day } });
-    g.toast(`${t.name} is moving in for $${rent}/day.`);
+    g.toast(`${t.name} is moving in for ${cashText(rent)}/day.`);
     this.reaction = '"It\'s a deal."';
     this.counter = null;
     g.syncNpcs();
