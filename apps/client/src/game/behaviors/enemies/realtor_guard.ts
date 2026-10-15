@@ -1,7 +1,7 @@
 import { registry, type ProjectileDef } from '@df/shared';
 import { shoot } from '../actions';
 import { defineBrain, enter, type Phased } from '../brain';
-import { chase, circle, clearToPlayer, coin, go, toPlayer } from '../steering';
+import { chase, circle, clearShot, coin, go, toPlayer } from '../steering';
 
 interface Params {
   /** It circles the player between these distances (tiles). */
@@ -44,7 +44,8 @@ export const realtorGuard = defineBrain<Params, State>({
           enter(s, 'shoveWindup');
           break;
         }
-        if (d > p.far || !clearToPlayer(ctx)) {
+        // Out of range or out of line, it closes in until it has a shot.
+        if (d > p.far || !clearShot(ctx, s.projectile)) {
           chase(ctx);
           break;
         }

@@ -7,6 +7,7 @@ export default {
   blocksMovement: ['walk'],
   blocksProjectiles: ['straight'],
   height: 'short',
+  depth: 6,
   isWall: true,
   material: 'wood',
   renovate: ['demolish'],

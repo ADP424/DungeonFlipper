@@ -8,7 +8,7 @@ export default {
   sprite: 'furniture/elevator',
   height: 1.6,
   blocksMovement: ['walk', 'fly'],
-  blocksProjectiles: ['straight'],
+  blocksProjectiles: ['straight', 'high'],
   fixed: true,
   use: { id: 'elevator' },
   utility: { needs: 'power' },

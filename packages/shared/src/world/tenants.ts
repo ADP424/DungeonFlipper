@@ -2,7 +2,7 @@ import type { Rng } from '../core/rng';
 import { registerDaily, registerTick } from './advance';
 import type { Command } from './commands';
 import { APARTMENT_FLOOR } from './difficulty';
-import { isSecure, roomLabel } from './securing';
+import { roomLabel } from './securing';
 import { findSign, signs, unitAt, unitStats, type Unit, type UnitStats } from './units';
 import type { WorldState } from './types';
 import { openings } from './area';
@@ -211,36 +211,6 @@ export function haggle(value: number, offer: number): { result: 'accept' | 'coun
 /** TEMPORARY (testing): every valid listing draws an applicant each night. Set back to false to restore the odds. */
 export const TEMP_ALWAYS_APPLY = true;
 
-/**
- * Why an open listing won't draw anyone tonight (or null if it can). Mirrors the checks in
- * `tenantsDay`: the unit needs a bed, nobody already living there or viewing it, and a route to the
- * lobby through rooms you own that are all secure (the lobby included).
- */
-export function listingProblem(state: WorldState, floor: number, signUid: string): string | null {
-  const sign = findSign(state, signUid);
-  if (!sign) return 'the sign is gone';
-  if (sign.f.data?.closed === true) return 'the listing is closed';
-  const unit = unitAt(state, floor, sign.f.x, sign.f.y);
-  if (!unit) return "the sign isn't in a room you own";
-  for (const t of Object.values(getTenants(state))) {
-    if (t.signUid === signUid) return t.status === 'living' ? 'someone already lives here' : 'someone is already viewing it';
-    const u = t.status === 'living' ? tenantUnit(state, t) : null;
-    if (u?.key === unit.key) return 'someone already lives in this unit';
-  }
-  const s = unitStats(state, unit);
-  if (s.beds < 1) return 'there is no bed in the unit';
-  if (!s.connected) {
-    const f = state.floors[floor]!;
-    const lobby = f.rooms[f.lobbyRoomId]!;
-    if (state.rooms[lobby.id]?.ownerId !== unit.ownerId) return "the floor's lobby isn't yours";
-    if (!isSecure(state, lobby.id)) return `the lobby isn't secure (${roomLabel(lobby)} has a door to monsters without a strong enough barricade)`;
-    const bad = unit.rooms.find((id) => !isSecure(state, id));
-    if (bad) return `${roomLabel(f.rooms[bad]!)} isn't secure`;
-    return 'there is no route from the lobby through secure rooms you own';
-  }
-  return null;
-}
-
 /** Chance a listed unit draws an applicant today: 50% with nothing unsecured around it, less per unsecured neighbour, more so if it has monsters. */
 export function applicantChance(s: UnitStats): number {
   if (TEMP_ALWAYS_APPLY) return 1;
@@ -298,7 +268,6 @@ export function tenantsDay(state: WorldState, ctx: { day: number; rng: Rng }): C
     }
     if (t.trapped !== undefined && unit?.rooms.some((id) => state.rooms[id]?.monsters.length)) {
       out.push({ type: 'tenantRemoved', id: t.id });
-      out.push(msg(rng, owner, day, minute, 'urgent', `${t.name} didn't make it. Monsters were still in ${where} at the end of the day.`));
       rep += REP.death;
       continue;
     }
@@ -401,20 +370,15 @@ export function tenantsDay(state: WorldState, ctx: { day: number; rng: Rng }): C
  * is one; otherwise they're trapped (and die at the day's end unless you clear it). They go back
  * home once it's clear.
  */
-export function tenantsTick(state: WorldState, ctx: { clock: { day: number; minute: number }; rng: Rng }): Command[] {
+export function tenantsTick(state: WorldState, { clock }: { clock: { day: number; minute: number }; rng: Rng }): Command[] {
   const out: Command[] = [];
-  const { rng, clock } = ctx;
   for (const t of Object.values(getTenants(state))) {
     if (t.status !== 'living') continue;
     const unit = tenantUnit(state, t);
     if (!unit) continue;
     const invaded = unit.rooms.some((id) => state.rooms[id]?.monsters.length);
-    const where = roomLabel(state.floors[unit.floor]!.rooms[unit.rooms[0]!]!);
     if (!invaded) {
-      if (t.displaced || t.trapped !== undefined) {
-        out.push({ type: 'tenantSet', tenant: { ...t, displaced: false, trapped: undefined } });
-        out.push(msg(rng, state.ownerId, clock.day, clock.minute, 'info', `${t.name} is back home in ${where}.`));
-      }
+      if (t.displaced || t.trapped !== undefined) out.push({ type: 'tenantSet', tenant: { ...t, displaced: false, trapped: undefined } });
       continue;
     }
     if (t.displaced || t.trapped !== undefined) continue;
@@ -425,13 +389,7 @@ export function tenantsTick(state: WorldState, ctx: { clock: { day: number; minu
         // Somewhere of yours next door with nobody in it (its doorway into the unit is the breach, so it needn't be secure).
         .some((n) => !unit.rooms.includes(n) && state.rooms[n]?.ownerId === unit.ownerId && !state.rooms[n]!.monsters.length);
     });
-    if (shelter) {
-      out.push({ type: 'tenantSet', tenant: { ...t, displaced: true } });
-      out.push(msg(rng, state.ownerId, clock.day, clock.minute, 'warn', `Monsters got into ${where}. ${t.name} fled next door.`));
-    } else {
-      out.push({ type: 'tenantSet', tenant: { ...t, trapped: clock.day } });
-      out.push(msg(rng, state.ownerId, clock.day, clock.minute, 'urgent', `${t.name} is trapped in ${where} with monsters! Clear it before the day ends.`));
-    }
+    out.push({ type: 'tenantSet', tenant: shelter ? { ...t, displaced: true } : { ...t, trapped: clock.day } });
   }
   return out;
 }

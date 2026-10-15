@@ -1,7 +1,7 @@
 import { registry, type ProjectileDef } from '@df/shared';
 import { shoot } from '../actions';
 import { defineBrain, enter, type BrainCtx, type Phased } from '../brain';
-import { flee, moveTo, toPlayer } from '../steering';
+import { clearShot, flee, moveTo, toPlayer } from '../steering';
 import type { Enemy } from '../../entities/Enemy';
 
 interface Params {
@@ -68,8 +68,8 @@ export const hrRep = defineBrain<Params, State>({
         // The point behind the colleague, as seen from the player.
         const ax = shield.x - game.player.x, ay = shield.y - game.player.y;
         const l = Math.hypot(ax, ay) || 1;
-        moveTo(e, shield.x + (ax / l) * p.behind, shield.y + (ay / l) * p.behind, e.def.speed, dt);
-        if (s.throwIn <= 0 && d <= p.range) enter(s, 'windup');
+        moveTo(ctx, shield.x + (ax / l) * p.behind, shield.y + (ay / l) * p.behind, e.def.speed, dt);
+        if (s.throwIn <= 0 && d <= p.range && clearShot(ctx, s.pen)) enter(s, 'windup');
         break;
       }
       case 'windup':
@@ -86,7 +86,7 @@ export const hrRep = defineBrain<Params, State>({
           break;
         }
         flee(ctx, p.panicSpeed);
-        if (s.throwIn <= 0 && d <= p.staplerRange) {
+        if (s.throwIn <= 0 && d <= p.staplerRange && clearShot(ctx, s.stapler)) {
           shoot(ctx, s.stapler, angle, { damage: p.staplerDamage });
           s.throwIn = p.staplerCooldown;
         }

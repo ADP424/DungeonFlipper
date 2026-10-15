@@ -11,9 +11,9 @@ export const furnitureUses: Record<string, FurnitureUse> = {
   toggleListing: (game, f) => game.toggleListing(f.uid),
   /** Lobby elevator: pick a floor whose lobby you've reached. */
   elevator: (game, f) => {
-    if (!game.supplied(f)) return game.toast('The elevator is dead. Run wire from it to a generator.');
+    if (!game.supplied(f)) return;
     const floors = game.elevatorFloors();
-    if (floors.length < 2) return game.toast('The buttons for other floors are dark. Find the stairs down first.');
+    if (floors.length < 2) return;
     game.ui.openElevator(floors, game.floorIndex, (target) => game.callElevator(f.uid, target));
   },
 };

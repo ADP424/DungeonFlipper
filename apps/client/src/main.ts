@@ -2,7 +2,7 @@ import { Application } from 'pixi.js';
 import { registerAllContent, registry } from '@df/shared';
 import { canvasFor, loadAssets } from './engine/assets';
 import { validateBrains } from './game/behaviors';
-import { Game } from './game/Game';
+import { Game, VOID_COLOR } from './game/Game';
 import { Session } from './game/Session';
 
 async function main(): Promise<void> {
@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   validateBrains();
   const host = document.getElementById('app')!;
   const app = new Application();
-  await app.init({ preference: 'webgl', resizeTo: window, background: 0x0b0a10, antialias: false, roundPixels: true, autoDensity: true, resolution: window.devicePixelRatio || 1 });
+  await app.init({ preference: 'webgl', resizeTo: window, background: VOID_COLOR, antialias: false, roundPixels: true, autoDensity: true, resolution: window.devicePixelRatio || 1 });
   host.prepend(app.canvas);
   await loadAssets();
   const session = await Session.boot();

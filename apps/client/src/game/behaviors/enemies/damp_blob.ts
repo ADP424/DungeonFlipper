@@ -61,7 +61,7 @@ export const dampBlob = defineBrain<Params, State>({
       case 'rest':
         if (s.t < s.restFor) break;
         if (s.hopsLeft > 0) {
-          const dir = game.room.pathDir(e);
+          const dir = game.room.paths.dirTo(e, game.player.x, game.player.y);
           s.heading = Math.atan2(dir.y, dir.x) + (Math.random() - 0.5) * p.jitter;
           s.speed = p.hopDistance / p.hopTime;
           s.hopsLeft--;

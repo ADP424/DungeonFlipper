@@ -2,11 +2,11 @@ import { Application, Container, Graphics, Text, Sprite } from 'pixi.js';
 import {
   AWAY_SLEEP_HEAL_FRACTION, CELL_H, CELL_W, HealthStack, MIDNIGHT_MINUTE, CLOCK_STEP, MINUTES_PER_SECOND, PASS_OUT_MINUTE, Rng,
   TILE_PX, addToHotbar, advanceClock, angleDiff, canHold, countLeft, createItem, entryPoint, expandRoom, footprint, turnPoint,
-  APARTMENT_FLOOR, BARRICADE_TIERS, RoomLayout, barricadeKit, areaRooms, formatTime, partnerDoor, securityNeeds, generateFloor, getClock,
-  getInbox, registerAllResolvers, cellCenter, getRealtors, guardsFor, realtorOf, realtorRooms, stanceOf, inward, REP_REALTOR, RELATION, listingProblem, getStaff, householdSize, type StaffRole, UTILITY_KINDS, fixtureSupplied, utilityNets, type UtilityKind, type UtilityNets, stairsDownRooms, structuralWallTarget, findSign, getTenants, unitAt,
-  type Barricade, isOwned, isOwnedBy, isSecure, itemDef, registry, rollLoot, tileKey, uid, wakeTime,
+  APARTMENT_FLOOR, BARRICADE_TIERS, RoomLayout, barricadeKit, areaRooms, partnerDoor, generateFloor, getClock,
+  getInbox, registerAllResolvers, cellCenter, getRealtors, guardsFor, realtorOf, realtorRooms, stanceOf, inward, REP_REALTOR, RELATION, getStaff, householdSize, type StaffRole, UTILITY_KINDS, fixtureSupplied, utilityNets, type UtilityKind, type UtilityNets, stairsDownRooms, structuralWallTarget, findSign, getTenants, unitAt,
+  type Barricade, isOwned, isSecure, itemDef, registry, rollLoot, tileKey, uid, wakeTime,
   type Command, type FurniturePlacement, type HealthLayer, type Hotbar, type ItemInstance, type LightDef,
-  type MonsterRecord, type PhoneMessage, type Tenant, cashText, deathCommands, rescueNote, type RescueBill,
+  type MonsterRecord, type PhoneMessage, type Tenant, deathCommands, rescueNote, type RescueBill,
 } from '@df/shared';
 import { Input } from '../engine/input';
 import { Lighting, type LightInstance } from '../render/Lighting';
@@ -61,13 +61,19 @@ interface SleepState { kind: SleepKind; homeBed: boolean; t: number; applied: bo
 const VIEW_W = CELL_W * TILE_PX + 2 * 40;
 const VIEW_H = 160;
 
+/** The colour of nothing: the screen behind the world, and the dark around the rooms. */
+export const VOID_COLOR = 0x0b0a10;
+/** How far past the active rooms the dark around them is drawn (tiles): more than anything reaches. */
+const VOID_MARGIN = 64;
+
 export class Game {
   readonly input: Input;
   readonly world = new Container();
   readonly floorLayer = new Container();
-  readonly wallLayer = new Container();
   readonly entityLayer = new Container();
   readonly fxLayer = new Container();
+  /** The dark around the rooms, over everything in the world: nothing that reaches past a room's edge shows there. */
+  private readonly voidLayer = new Graphics();
   /** World-space overlays drawn above the darkness (previews, damage numbers). */
   readonly overWorld = new Container();
   readonly lighting: Lighting;
@@ -101,8 +107,6 @@ export class Game {
   private portalArmed = true;
   /** The room you came from through the last door: kept quiet (see `quietRooms`). */
   private prevRoomId: string | null = null;
-  /** The "barricade N doors" banner was shown for the current cleared room. */
-  private clearNoted = false;
   private toastCd = new Map<string, number>();
   private staticLights: LightInstance[] = [];
   private readonly shadows = new ShadowMaps();
@@ -112,7 +116,7 @@ export class Game {
     registerAllResolvers();
     this.input = new Input(app.canvas);
     this.entityLayer.sortableChildren = true;
-    this.world.addChild(this.floorLayer, this.symptoms, this.wallLayer, this.entityLayer, this.fxLayer);
+    this.world.addChild(this.floorLayer, this.symptoms, this.entityLayer, this.fxLayer, this.voidLayer);
     this.entityLayer.addChild(this.elevatorFx);
     this.lighting = new Lighting(app.screen.width, app.screen.height);
     app.stage.addChild(this.world, this.lighting.overlay, this.overWorld);
@@ -206,7 +210,7 @@ export class Game {
     const b = this.room.layout.fullBounds();
     const rx = b.x * TILE_PX, ry = b.y * TILE_PX, rw = b.w * TILE_PX, rh = b.h * TILE_PX;
     // Follow the player where they're drawn (a whole art pixel), so they stay put on a scrolling screen.
-    const px = artPixel(this.player.x), py = artPixel(this.player.y);
+    const px = artPixel(this.player.x), py = artPixel(this.player.y) - this.player.bodyLift;
     this.cam.x = rw <= viewW ? rx + rw / 2 - viewW / 2 : Math.max(rx, Math.min(rx + rw - viewW, px - viewW / 2));
     this.cam.y = rh <= viewH ? ry + rh / 2 - viewH / 2 : Math.max(ry, Math.min(ry + rh - viewH, py - viewH / 2));
   }
@@ -254,7 +258,8 @@ export class Game {
       if (d.kind === 'weapon') add(this.player.x, this.player.y, d.light);
     }
     for (const e of this.room.enemies) if (e.alpha > 0.2) add(e.x, e.y, e.light, e.id);
-    for (const p of this.room.projectiles) add(p.x, p.y - p.z, p.light, p.id);
+    // A light is at its spot on the floor: a shot's is under it.
+    for (const p of this.room.projectiles) add(p.x, p.y, p.light, p.id);
     for (const f of this.room.layout.furniture()) {
       const def = registry.furniture.get(f.defId);
       if (!def.light || !this.supplied(f)) continue;
@@ -270,13 +275,13 @@ export class Game {
   }
 
   /**
-   * Moving things that cast shadows: the player and visible enemies, where their views are drawn (so
-   * after `syncView`), which is what keeps the shadow maps' silhouettes exactly under the sprites.
+   * Moving things that cast shadows: the player and visible enemies, where their views are drawn and
+   * sorted (so after `syncView`), which is what keeps them in the shadow maps exactly as on screen.
    */
   private shadowBlobs(): ShadowBlob[] {
     const out: ShadowBlob[] = [];
     const part = (key: string, s: Sprite) => ({ key, dy: s.y, sx: s.scale.x, sy: s.scale.y });
-    const add = (a: Actor, h: number, sprites: ShadowBlob['sprites']) => out.push({ x: a.view.x / TILE_PX, y: a.view.y / TILE_PX, h, sprites });
+    const add = (a: Actor, h: number, sprites: ShadowBlob['sprites']) => out.push({ x: a.view.x / TILE_PX, y: a.view.y / TILE_PX, h, sort: a.view.zIndex, sprites });
     const p = this.player;
     if (p.view.visible) add(p, ACTOR_HEIGHT, [part(p.spriteKey, p.sprite), part(p.headKey, p.head)]);
     for (const e of this.room.enemies) {
@@ -286,8 +291,30 @@ export class Game {
     return out;
   }
 
-  /** Lights and shadow geometry that only change when the room's tiles or furniture do. */
+  /** Cover everything that isn't a tile of an active room: the gaps among them (a run of void tiles at a time) and all around them. */
+  private drawVoid(): void {
+    const L = this.room.layout;
+    const g = this.voidLayer.clear();
+    const x0 = L.originX, y0 = L.originY, x1 = x0 + L.w, y1 = y0 + L.h, m = VOID_MARGIN;
+    const fill = (x: number, y: number, w: number, h: number) => g.rect(x * TILE_PX, y * TILE_PX, w * TILE_PX, h * TILE_PX).fill(VOID_COLOR);
+    fill(x0 - m, y0 - m, L.w + 2 * m, m);
+    fill(x0 - m, y1, L.w + 2 * m, m);
+    fill(x0 - m, y0, m, L.h);
+    fill(x1, y0, m, L.h);
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (L.kindAt(x, y) !== 'void') continue;
+        let end = x + 1;
+        while (end < x1 && L.kindAt(end, y) === 'void') end++;
+        fill(x, y, end - x, 1);
+        x = end;
+      }
+    }
+  }
+
+  /** Lights, shadow geometry and the dark around the rooms, which only change when the room's tiles or furniture do. */
   private rebuildStaticLights(): void {
+    this.drawVoid();
     this.shadows.rebuild(this.room.layout, this.app.renderer);
     this.staticLights = [];
     for (const t of this.room.layout.tiles()) {
@@ -319,10 +346,8 @@ export class Game {
     this.runClock(dt);
     if (this.sleeping) return;
     const room = this.room;
-    room.player = this.player;
-    room.updateFlow(dt);
+    room.paths.sync(this.session.changes);
     this.player.update(dt);
-    this.noticePlanks();
     this.trackRooms();
 
     for (const e of room.enemies) if (!e.dead) e.update(this, dt);
@@ -367,14 +392,6 @@ export class Game {
     if (near > pl.radius + 0.6) this.portalArmed = true;
   }
 
-  /** Walking into a plank barricade: explain how to get through. */
-  private noticePlanks(): void {
-    const mv = this.input.moveVector();
-    if (!mv.x && !mv.y) return;
-    const tx = Math.floor(this.player.x + mv.x * 0.8), ty = Math.floor(this.player.y + mv.y * 0.8);
-    if (this.room.layout.barricadeAt(tx, ty)?.tier === 1) this.toast('Boarded up. Pry the planks off with a crowbar to get through.', 'planks');
-  }
-
   private separateEnemies(): void {
     const es = this.room.enemies;
     for (let i = 0; i < es.length; i++) {
@@ -403,14 +420,14 @@ export class Game {
         p.x = p.lob.sx + (p.lob.tx - p.lob.sx) * t;
         p.y = p.lob.sy + (p.lob.ty - p.lob.sy) * t;
         p.z = Math.sin(t * Math.PI) * (p.def.lobHeight ?? 1.5);
-        if (this.room.projectileBlocked(p.x, p.y, 'lobbed')) { this.impact(p); continue; }
+        if (this.room.projectileBlocked(p.x, p.y, p.trajectory)) { this.impact(p); continue; }
         if (t >= 1) this.impact(p);
         continue;
       }
       if (p.def.homing) this.home(p, dt);
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      if (p.age > p.def.lifetime || this.room.projectileBlocked(p.x, p.y, 'straight')) {
+      if (p.age > p.def.lifetime || this.room.projectileBlocked(p.x, p.y, p.trajectory)) {
         this.impact(p);
         continue;
       }
@@ -432,7 +449,7 @@ export class Game {
   /** A melee swing knocks a projectile out of the air. */
   swatProjectile(p: Projectile): void {
     p.dead = true;
-    this.burst(p.x, p.y, 0xe0e0e0, 5);
+    this.burst(p.x, p.midY, 0xe0e0e0, 5);
   }
 
   private projectileHits(p: Projectile): void {
@@ -479,7 +496,7 @@ export class Game {
       this.room.puddles.push(puddle);
       this.entityLayer.addChild(puddle.view);
     }
-    if (!quiet || splash) this.burst(p.x, p.y, p.def.light?.color ?? 0xd0d0d0, splash ? 10 : 4);
+    if (!quiet || splash) this.burst(p.x, p.midY, p.def.light?.color ?? 0xd0d0d0, splash ? 10 : 4);
   }
 
   private updateItems(dt: number): void {
@@ -558,14 +575,8 @@ export class Game {
     const r = this.room;
     const id = r.currentId;
     if (isOwned(r.state)) return;
-    if (r.enemies.some((e) => e.monsterId && !e.dead && e.roomId === id) || r.state.monsters.length > 0) {
-      this.clearNoted = false;
-      return;
-    }
+    if (r.enemies.some((e) => e.monsterId && !e.dead && e.roomId === id) || r.state.monsters.length > 0) return;
     for (const e of r.enemies) if (!e.monsterId && !e.dead && e.roomId === id) this.killEnemy(e, false);
-    if (this.clearNoted) return;
-    this.clearNoted = true;
-    this.ui.banner('Room cleared', 'Plant a company flag to claim it, and barricade doors to rooms with monsters, or more will come.');
   }
 
   /** Plant a company flag on a tile of the current (cleared) room: the room is company property now. */
@@ -575,9 +586,6 @@ export class Game {
     this.dispatch({ type: 'roomOwned', roomId: id, ownerId: this.session.playerId });
     this.furnitureChanged();
     this.burst(x + 0.5, y + 0.5, 0xd0b040, 16);
-    this.ui.banner('Property acquired!', 'This room is company property now.');
-    const need = securityNeeds(this.session.state, this.room.layout.layouts.get(id)!.info);
-    if (need.doors) this.toast(`Not secure yet: ${need.doors} door${need.doors === 1 ? ' needs' : 's need'} a barricade (tier ${need.tier} or better)`, 'insecure');
     // It may join your estate: walk on into the bigger space without a screen change.
     if (areaRooms(this.session.state, id).length > 1) this.reloadArea();
     void this.session.flush();
@@ -587,7 +595,7 @@ export class Game {
   /** A passive realtor under the cursor (click to talk). */
   realtorUnderCursor(): Enemy | undefined {
     const m = this.mouseWorld();
-    return this.room.enemies.find((e) => !e.dead && e.passive && e.def.id === 'realtor' && Math.hypot(e.x - m.x, e.y - 0.3 - m.y) < 0.6);
+    return this.room.enemies.find((e) => !e.dead && e.passive && e.def.id === 'realtor' && Math.hypot(e.x - m.x, e.midY - 0.3 - m.y) < 0.6);
   }
 
   private reloadArea(): void {
@@ -615,7 +623,6 @@ export class Game {
     this.burst(x + 0.5, y + 0.5, 0x8a8a8a, 18);
     this.burst(other.x + 0.5, other.y + 0.5, 0x8a8a8a, 18);
     this.shake(0.4);
-    this.toast('The wall comes down');
     if (!this.room.layout.layouts.has(other.roomId)) return this.reloadArea();
     this.room.layout.layouts.get(id)!.rebuildFurniture();
     this.room.rebuildRoom(id);
@@ -628,17 +635,13 @@ export class Game {
   setBarricade(x: number, y: number, barricade: Barricade | null): void {
     const st = this.session.state;
     const id = this.room.roomIdAt(x, y) ?? this.room.currentId;
-    const wasSecure = isSecure(st, id);
     this.dispatch({ type: 'barricadeSet', roomId: id, door: tileKey(x, y), barricade });
     // It sits in both halves of the doorway.
     this.room.rebuildRoom(id);
     const other = partnerDoor(st, id, tileKey(x, y));
     if (other) this.room.rebuildRoom(other.roomId);
     if (!isOwned(st.rooms[id])) return;
-    const secure = isSecure(st, id);
-    if (secure && st.rooms[id]!.insecureSince !== undefined) this.dispatch({ type: 'roomInsecure', roomId: id, since: null });
-    if (secure && !wasSecure) this.toast('This room is secure');
-    if (!secure && wasSecure) this.toast('This room is no longer secure');
+    if (isSecure(st, id) && st.rooms[id]!.insecureSince !== undefined) this.dispatch({ type: 'roomInsecure', roomId: id, since: null });
   }
 
   /** The active rooms' barricades, to spot changes while time passes. */
@@ -829,11 +832,9 @@ export class Game {
     if (why === 'theft') {
       this.dispatch({ type: 'reputationAdded', playerId: this.session.playerId, delta: REP_REALTOR.theft });
       this.dispatch({ type: 'realtorSet', realtor: { ...r, relation: Math.max(-100, r.relation + RELATION.robbed) } });
-      this.toast(`That's ${r.name}'s! Their people saw you.`, 'theft');
     } else if (first) {
       this.dispatch({ type: 'reputationAdded', playerId: this.session.playerId, delta: REP_REALTOR.assault });
       this.dispatch({ type: 'realtorSet', realtor: { ...r, relation: Math.min(r.relation, RELATION.attacked) } });
-      this.notify('warn', `You attacked ${r.name}'s people. They won't forget it.`);
     }
   }
 
@@ -848,7 +849,6 @@ export class Game {
     }
     this.dispatch({ type: 'realtorRemoved', id });
     this.dispatch({ type: 'reputationAdded', playerId: this.session.playerId, delta: REP_REALTOR.killed });
-    this.notify('urgent', `You killed ${r.name}. Their rooms are up for grabs, but nobody decent will want to rent from you for a long while.`);
     this.provoked.delete(id);
     this.refreshArea();
   }
@@ -912,7 +912,7 @@ export class Game {
   /** A tenant or applicant under the cursor. */
   npcUnderCursor(): TenantNpc | undefined {
     const m = this.mouseWorld();
-    return this.room.npcs.find((n) => Math.hypot(n.x - m.x, n.y - 0.3 - m.y) < 0.55);
+    return this.room.npcs.find((n) => Math.hypot(n.x - m.x, n.midY - 0.3 - m.y) < 0.55);
   }
 
   /** Put a For Rent sign down on a tile of your property: lists its unit. */
@@ -920,10 +920,6 @@ export class Game {
     const id = this.room.roomIdAt(x, y) ?? this.room.currentId;
     this.dispatch({ type: 'furniturePlaced', roomId: id, placement: { uid: uid(), defId: 'for_rent_sign', x, y, rot: 0, data: { closed: false } } });
     this.furnitureChanged();
-    const unit = unitAt(this.session.state, this.floorIndex, x, y);
-    const beds = unit?.furniture.filter((f) => registry.furniture.tryGet(f.f.defId)?.tags?.includes('bed')).length ?? 0;
-    if (!this.room.ownedAt(x, y)) this.toast("It's up, but this isn't your property: nobody will apply here.");
-    else this.toast(beds ? 'Listed for rent. Applicants come up from the lobby.' : 'Listed, but nobody will rent a place without a bed.');
   }
 
   /** Click a For Rent sign: open or close its listing. */
@@ -932,9 +928,7 @@ export class Game {
     if (!at) return;
     const closed = !(at.f.data?.closed === true);
     this.dispatch({ type: 'furnitureUpdated', roomId: at.room.info.id, placement: { ...at.f, data: { ...at.f.data, closed } } });
-    if (closed) return this.toast('Listing closed');
-    const problem = listingProblem(this.session.state, this.floorIndex, uidOf);
-    this.toast(problem ? `Listing open, but nobody will come: ${problem}.` : 'Listing open. Expect an applicant after the next night.', 'listing');
+    this.toast(closed ? 'Listing closed' : 'Listing open', 'listing');
   }
 
   /** A room leaves the active set: its monsters' wounds are saved and its live entities go away. */
@@ -959,7 +953,6 @@ export class Game {
       this.room.currentId = rid;
       const p = this.session.player;
       this.dispatch({ type: 'playerMoved', playerId: p.id, floor: p.floor, roomId: rid, x: this.player.x, y: this.player.y });
-      this.clearNoted = false;
       this.ui.onRoomChanged();
       this.checkCurfew();
     }
@@ -1000,7 +993,7 @@ export class Game {
     const tx = Math.floor(pl.x), ty = Math.floor(pl.y);
     const key = tileKey(tx, ty);
     if (!this.room.layout.containsTile(tx, ty)) {
-      const door = this.room.exits.get(key);
+      const door = this.room.exitAt(tx, ty);
       if (door) {
         const from = this.room.info.id;
         this.loadRoom(door.toRoom, true);
@@ -1046,10 +1039,9 @@ export class Game {
     for (const f of this.fx) f.view.destroy({ children: true });
     this.fx = [];
     this.fxLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
-    this.player.swing = null;
-    const layers = { floor: this.floorLayer, walls: this.wallLayer, entities: this.entityLayer };
+    this.player.endSwing();
+    const layers = { floor: this.floorLayer, entities: this.entityLayer };
     this.room = new AreaRuntime(st, p.floor, areaRooms(st, roomId), roomId, layers, this.session.playerId);
-    this.room.player = this.player;
     if (!this.player.view.parent) this.entityLayer.addChild(this.player.view);
     this.updateCamera();
     this.updateStreaming(true);
@@ -1059,11 +1051,6 @@ export class Game {
       this.dispatch({ type: 'playerMoved', playerId: this.session.playerId, floor: p.floor, roomId, x: this.player.x, y: this.player.y });
     }
     this.ui.onRoomChanged();
-    this.clearNoted = false;
-    if (isOwnedBy(roomState, this.session.playerId) && !isSecure(st, roomId) && !roomState.monsters.length) {
-      const need = securityNeeds(st, info);
-      if (need.doors) this.toast(`Not secure: ${need.doors} door${need.doors === 1 ? ' needs' : 's need'} a barricade (tier ${need.tier} or better)`, 'insecure');
-    }
     void this.session.flush();
   }
 
@@ -1103,7 +1090,7 @@ export class Game {
     this.player.y = spot?.y ?? e.y;
     const from = this.room.info.id;
     this.loadRoom(roomId, true);
-    this.ui.banner(`Level ${target}`, delta > 0 ? 'Deeper into the Backrooms…' : 'Back up the stairs.');
+    this.ui.banner(`Level ${target}`);
     this.afterTransition(from);
   }
 
@@ -1123,7 +1110,6 @@ export class Game {
   callElevator(uid: string, target: number): void {
     if (target === this.floorIndex || !this.elevatorFloors().includes(target)) return;
     this.elevatorCall = { uid, target, until: this.time + ELEVATOR_WAIT };
-    this.toast(`Ding. The doors open: step in to go to Level ${target}.`, 'elevator');
   }
 
   private elevatorCall: { uid: string; target: number; until: number } | null = null;
@@ -1135,7 +1121,6 @@ export class Game {
     const f = this.room.layout.findFurniture(call.uid)?.f;
     if (!f || this.time > call.until) {
       this.elevatorCall = null;
-      if (f) this.toast('The elevator doors slide shut.', 'elevator');
       return;
     }
     const mv = this.input.moveVector();
@@ -1145,7 +1130,7 @@ export class Game {
     const dx = cx - pl.x, dy = cy - pl.y;
     if (Math.hypot(dx, dy) > pl.radius + 0.08 || dx * mv.x + dy * mv.y <= 0) return;
     this.elevatorCall = null;
-    this.arriveAtLobby(call.target, 'elevator', `Level ${call.target}`, 'Ding.');
+    this.arriveAtLobby(call.target, 'elevator');
   }
 
   /** The called elevator's doors, drawn open (parted panels, light spilling out). */
@@ -1168,14 +1153,14 @@ export class Game {
   /** Step through the crack: apartment ↔ Level 1's lobby. */
   usePortal(): void {
     const st = this.session.state;
-    if (this.floorIndex === APARTMENT_FLOOR) this.arriveAtLobby(1, 'portal', 'Level 1', 'The carpet is damp. The lights hum.');
-    else if (this.room.info.id === st.floors[1]?.lobbyRoomId) this.arriveAtLobby(APARTMENT_FLOOR, 'portal', 'Home', 'Your apartment. It smells like old pizza.');
+    if (this.floorIndex === APARTMENT_FLOOR) this.arriveAtLobby(1, 'portal');
+    else if (this.room.info.id === st.floors[1]?.lobbyRoomId) this.arriveAtLobby(APARTMENT_FLOOR, 'portal');
   }
 
   /**
    * Arrive in a floor's lobby next to the furniture whose use is `nearUse` (the elevator or the portal).
    */
-  private arriveAtLobby(target: number, near: string, title: string, sub: string): void {
+  private arriveAtLobby(target: number, near: string): void {
     const st = this.session.state;
     const p = this.session.player;
     const floor = st.floors[target];
@@ -1190,7 +1175,7 @@ export class Game {
     this.player.y = spot ? spot.y + 0.5 : e.y;
     this.loadRoom(lobby, true);
     this.portalArmed = false;
-    this.ui.banner(title, sub);
+    this.ui.banner(target === APARTMENT_FLOOR ? 'Home' : `Level ${target}`);
     this.prevRoomId = null;
     this.checkCurfew();
   }
@@ -1256,13 +1241,6 @@ export class Game {
     advanceClock(st, from, to, (c) => this.dispatch(c), undefined, quiet);
     this.dispatch({ type: 'timePassed', minutes });
     this.reconcileRoom(before);
-    if (!isSecure(st, this.room.info.id)) {
-      const warnings: [number, string][] = [
-        [MIDNIGHT_MINUTE, "It's midnight. Reach a secured room before 2 AM, or you'll pass out."],
-        [MIDNIGHT_MINUTE + 60, '1 AM. One hour left to reach a secured room.'],
-      ];
-      for (const [at, text] of warnings) if (from.minute < at && to.minute >= at) this.notify('warn', text);
-    }
     this.checkCurfew();
   }
 
@@ -1292,7 +1270,7 @@ export class Game {
   private beginSleep(kind: SleepKind, homeBed = false): void {
     if (this.sleeping || this.dying > 0) return;
     this.sleeping = { kind, homeBed, t: 0, applied: false };
-    this.player.swing = null;
+    this.player.endSwing();
     this.ui.closeStorage();
     this.ui.fade(true);
   }
@@ -1316,42 +1294,33 @@ export class Game {
     const from = getClock(st);
     const to = wakeTime(from);
     const fatal = FATAL.has(s.kind);
-    const fell = this.session.player.floor;
     const bill = fatal ? this.dieHome() : null;
-    const seen = new Set(getInbox(st, this.session.playerId).messages.map((m) => m.id));
     const before = this.barricadesSnapshot();
     advanceClock(st, from, to, (c) => this.dispatch(c), from.day);
     this.clockAcc = 0;
     this.reconcileRoom(before);
     // The night may have changed furniture here (deliveries, repossessions).
     this.furnitureChanged();
+    this.wakeClear();
     const max = this.player.maxRedHalves();
     const fullRest = s.homeBed || fatal;
     const hp = fullRest ? max : Math.max(this.session.player.redHalves, Math.min(max, Math.floor(max * AWAY_SLEEP_HEAL_FRACTION)));
     this.dispatch({ type: 'slept', playerId: this.session.playerId, clock: to, redHalves: hp });
-    const how: Record<SleepKind, string> = {
-      bed: 'You slept in your own bed and feel fully rested.',
-      floor: 'You slept on the floor. Only partly rested.',
-      collapse: 'You collapsed from exhaustion at midnight. Only partly rested.',
-      passOut: 'You passed out in the Backrooms at 2 AM and came round at home.',
-      died: `You died on Level ${fell} and came round at home the next morning.`,
-    };
-    let text = how[s.kind];
-    if (bill) {
-      // What the lost day cost: the bill, and whatever went wrong while you were out.
-      const alerts = getInbox(st, this.session.playerId).messages.filter((m) => !seen.has(m.id) && m.severity !== 'info').length;
-      this.post({ severity: 'warn', from: 'Landlord', text: rescueNote(bill) });
-      text += ` The landlord charged ${cashText(bill.fee)} for hauling you out.`;
-      if (alerts) text += ` ${alerts} ${alerts === 1 ? 'alert' : 'alerts'} came in while you were out: check your phone.`;
-    }
-    this.notify(fatal ? 'urgent' : 'info', `Day ${to.day}. ${text}`, false);
-    this.ui.banner(`Day ${to.day}`, `${formatTime(to.minute, settings.clock24)}. ${text}`);
+    // The landlord bills you for hauling you out.
+    if (bill) this.post({ severity: 'warn', from: 'Landlord', text: rescueNote(bill) });
   }
 
-  /** Post a phone message, optionally also as a toast. */
-  notify(severity: PhoneMessage['severity'], text: string, toast = true): void {
-    this.post({ severity, text });
-    if (toast) this.toast(text);
+  /** You wake on open floor: beside whatever stands where you lay (furniture already there, or set down overnight). */
+  private wakeClear(): void {
+    const pl = this.player;
+    const L = this.room.layout;
+    if (!L.blocksMovement(Math.floor(pl.x), Math.floor(pl.y), pl.movementKind)) return;
+    const spot = L.nearestOpenFloor(pl.x, pl.y);
+    if (!spot) return;
+    pl.x = spot.x + 0.5;
+    pl.y = spot.y + 0.5;
+    const p = this.session.player;
+    this.dispatch({ type: 'playerMoved', playerId: p.id, floor: p.floor, roomId: this.room.roomIdAt(pl.x, pl.y) ?? p.roomId, x: pl.x, y: pl.y });
   }
 
   /** Post a phone message, stamped with the current time. */
@@ -1391,21 +1360,21 @@ export class Game {
       // Stopped by its shield: no harm done, and it barely budges.
       e.kx += dirX * kb * BLOCKED_KNOCKBACK;
       e.ky += dirY * kb * BLOCKED_KNOCKBACK;
-      this.burst(e.x - dirX * e.radius, e.y - dirY * e.radius, 0xd0d8e0, 5);
+      this.burst(e.x - dirX * e.radius, e.midY - dirY * e.radius, 0xd0d8e0, 5);
       return;
     }
     e.hp -= dmg;
     e.flash = 0.12;
     e.kx += dirX * kb;
     e.ky += dirY * kb;
-    this.floatText(e.x, e.y - 0.6, String(Math.round(dmg * 10) / 10), 0xffffff);
+    this.floatText(e.x, e.midY - 0.6, String(Math.round(dmg * 10) / 10), 0xffffff);
     if (e.hp <= 0) this.killEnemy(e, true);
   }
 
   killEnemy(e: Enemy, drops: boolean): void {
     if (e.dead) return;
     e.dead = true;
-    this.burst(e.x, e.y, e.def.tint ?? 0xc04040, 12);
+    this.burst(e.x, e.midY, e.def.tint ?? 0xc04040, 12);
     if (e.monsterId) this.dispatch({ type: 'monsterKilled', roomId: e.roomId || this.room.currentId, monsterId: e.monsterId });
     // Monsters die messily (on floor, wherever they fall).
     const mx = Math.floor(e.x), my = Math.floor(e.y);
@@ -1419,7 +1388,6 @@ export class Game {
       if (r?.raid) {
         const thugs = r.raid.thugs - 1;
         this.dispatch({ type: 'realtorSet', realtor: { ...r, raid: thugs > 0 ? { ...r.raid, thugs } : undefined } });
-        if (thugs <= 0) this.notify('info', `You ran off ${r.name}'s thugs. Everything's still here.`);
       }
     }
     if (e.def.boss) {
@@ -1522,9 +1490,8 @@ export class Game {
   /** Killed: once the death has played out, the rest of the day is lost like any night (`applySleep`). */
   private killPlayer(): void {
     this.dying = 1.6;
-    this.burst(this.player.x, this.player.y, 0xd8323c, 24);
+    this.burst(this.player.x, this.player.midY, 0xd8323c, 24);
     this.player.view.visible = false;
-    this.ui.banner('You died', 'You keep what you carried, but the rest of the day is gone.');
   }
 
   /** Death: reappear at home with everything in your hotbar, billed by the landlord for the trouble. */
@@ -1597,13 +1564,6 @@ export class Game {
     this.dispatch({ type: 'furniturePlaced', roomId: this.room.roomIdAt(x, y) ?? this.room.currentId, placement: { ...c, x, y } });
     this.dispatch({ type: 'playerUpdated', playerId: this.session.playerId, patch: { carrying: null } });
     this.furnitureChanged();
-    // Your own rooms are on your own grid: say so when something you set down has nothing to run on.
-    const needs = registry.furniture.get(c.defId).utility?.needs;
-    if (needs && !this.supplied({ ...c, x, y })) {
-      this.toast(needs === 'power'
-        ? 'No power here. Run wire from it to a generator (Wire Spool).'
-        : 'No water here. Run pipe from it to a water main (Pipe Bundle).', 'utility');
-    }
   }
 
   // ───────────────────────────── utilities ─────────────────────────────
@@ -1777,7 +1737,6 @@ export class Game {
     this.setBarricade(x, y, null);
     this.burst(x + 0.5, y + 0.5, 0x9a7a5a, 14);
     this.shake(0.15);
-    this.toast('You tore the barricade down');
   }
 
   /** Pry a barricade off whole: it comes back as a kit with whatever HP it had left. */

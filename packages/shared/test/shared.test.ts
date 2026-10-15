@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   CELL_H, CELL_W, HealthStack, MAX_STACK, Rng, RoomLayout, SCHEMA_VERSION, WallBits, addToHotbar, applyCommands,
   countLeft, createItem, emptyWorld, expandRoom, generateFloor, initialRoomState, migrate,
-  newWorldCommands, pickEntry, registerAllContent, registry, rollLoot, Stats, wallMask, wallQuarters,
+  newWorldCommands, pickEntry, registerAllContent, registry, rollLoot, showsFace, Stats, wallMask, wallQuarters,
   type Hotbar, type LootDrop, type RoomInfo, type RoomState,
   advanceClock, applyCommand, getClock, getInbox, registerDaily, registerTick, unregisterResolver, wakeTime,
   SaveTooOldError, formatTime, isSecure, BARRICADE_TIERS, requiredTier, securingTick, securingDay, pressurePerTick, canStack, createItem as makeItem, partnerDoor,
@@ -12,7 +12,7 @@ import {
   utilityNets, fixtureSupplied, utilitiesTick, contactTiles, missingNeed, FAULT_CHANCE,
   kitAccepts, cashText, deathCommands, rescueFee, rescueNote,
   getReputation, repTier, staffDay, staffCandidates, getStaff, tenantsDay as tenantsDayFn,
-  TEMP_ALWAYS_APPLY,
+  TEMP_ALWAYS_APPLY, shotTrajectory,
   realtorsDay, realtorsTick, getRealtors, stanceOf, transferRoom, sellPrice, buyPrice, freeClearedRoom, realtorRooms, REALTORS_KEY,
 } from '../src';
 
@@ -112,12 +112,27 @@ describe('layout', () => {
     expect(l.obstacleIdAt(3, 3)).toBe('backrooms_wall_short');
     expect(l.blocksProjectile(3, 3, 'straight')).toBe(true);
     expect(l.blocksProjectile(3, 3, 'lobbed')).toBe(false);
+    // A straight shot fired from the air flies over a short wall, but not a tall one.
+    expect(l.blocksProjectile(3, 3, 'high')).toBe(false);
     expect(l.blocksMovement(3, 3, 'walk')).toBe(true);
     expect(l.blocksMovement(3, 3, 'fly')).toBe(false);
     expect(l.blocksProjectile(0, 0, 'lobbed')).toBe(true);
+    expect(l.blocksProjectile(0, 0, 'high')).toBe(true);
     const hole = registry.obstacles.get('missing_floor');
     expect(hole.blocksMovement).toEqual(['walk']);
     expect(hole.blocksProjectiles).toEqual([]);
+  });
+
+  it('flies shots from the air high, over what flyers cross', () => {
+    const staple = registry.projectiles.get('staple'), glob = registry.projectiles.get('water_glob');
+    expect(shotTrajectory(staple, 'walk')).toBe('straight');
+    expect(shotTrajectory(staple, 'fly')).toBe('high');
+    expect(shotTrajectory(glob, 'fly')).toBe('lobbed');
+    // Whatever a flyer can't cross stops its shots too, and whatever stops a lob stops a high shot.
+    for (const d of [...registry.obstacles.all(), ...registry.furniture.all()]) {
+      if (d.blocksMovement.includes('fly') && d.blocksProjectiles.includes('straight')) expect(d.blocksProjectiles, d.id).toContain('high');
+      if (d.blocksProjectiles.includes('lobbed')) expect(d.blocksProjectiles, d.id).toContain('high');
+    }
   });
 });
 
@@ -298,50 +313,59 @@ const room = (templateId: string, cells = [{ cx: 0, cy: 0 }]): RoomInfo =>
   ({ id: 'r', floor: 1, templateId, mirrorX: false, mirrorY: false, cells, doors: [], tags: [], difficulty: 0, expanded: false });
 
 describe('wall autotiling', () => {
-  const pieces = (L: RoomLayout, x: number, y: number) => wallQuarters(wallMask(L, x, y)).map((q) => `${q.piece}${q.rot}`).join(' ');
+  const pieces = (L: RoomLayout, x: number, y: number) => wallQuarters(wallMask(L, x, y)).join(' ');
   const withWalls = (tiles: [number, number][]) => {
     const st = emptyState('r');
     for (const [x, y] of tiles) st.tileOverrides[`${x},${y}`] = 'concrete_wall';
     return new RoomLayout(room('level1_lobby'), st);
   };
 
-  it('faces room edges inward and notches room corners', () => {
+  it('edges rooms on the side that is open and notches room corners', () => {
     const L = withWalls([]);
-    // Top edge: enclosed above, the lower quarters' faces turned twice to point south, into the room.
-    expect(wallQuarters(wallMask(L, 5, 0)).map((q) => q.piece)).toEqual(['fill', 'fill', 'edge', 'edge']);
-    expect(wallQuarters(wallMask(L, 5, 0))[2]!.rot).toBe(2);
-    // Left edge faces east.
-    expect(wallQuarters(wallMask(L, 0, 5)).map((q) => `${q.piece}${q.rot}`)).toEqual(['fill0', 'edge1', 'edge1', 'fill3']);
+    // Top edge: enclosed above, open to the south, so its lower quarters show the wall's face.
+    expect(pieces(L, 5, 0)).toBe('fill fill horizontal horizontal');
+    expect(wallQuarters(wallMask(L, 5, 0)).map((p, q) => showsFace(q, p))).toEqual([false, false, true, true]);
+    // Bottom edge: open to the north, so only its top shows.
+    expect(pieces(L, 5, CELL_H - 1)).toBe('horizontal horizontal fill fill');
+    expect(wallQuarters(wallMask(L, 5, CELL_H - 1)).some((p, q) => showsFace(q, p))).toBe(false);
+    // Left edge: open to the east.
+    expect(pieces(L, 0, 5)).toBe('fill vertical vertical fill');
     // Top-left corner: all joined except the diagonal into the room.
-    expect(pieces(L, 0, 0)).toBe('fill0 fill1 inner2 fill3');
+    expect(pieces(L, 0, 0)).toBe('fill fill inner fill');
   });
 
   it('handles lone pillars, thick blocks and L-shapes joined to the corner', () => {
-    expect(pieces(withWalls([[8, 5]]), 8, 5)).toBe('outer0 outer1 outer2 outer3');
+    expect(pieces(withWalls([[8, 5]]), 8, 5)).toBe('outer outer outer outer');
     // A 2×6 block: corners are outer on two sides, the long sides are edges, nothing is left open.
     const block: [number, number][] = [];
     for (let y = 3; y < 9; y++) for (let x = 6; x < 8; x++) block.push([x, y]);
     const B = withWalls(block);
-    expect(pieces(B, 6, 3)).toBe('outer0 edge0 fill2 edge3');
-    expect(pieces(B, 6, 5)).toBe('edge3 fill1 fill2 edge3');
+    expect(pieces(B, 6, 3)).toBe('outer horizontal fill vertical');
+    expect(pieces(B, 6, 5)).toBe('vertical fill fill vertical');
     // An L from the top-left corner: (1,1),(2,1),(1,2). (1,1) joins the corner walls on all sides
     // but still shows an inner notch toward (2,2); (2,1) is a stub sticking out of the top wall.
     const L = withWalls([[1, 1], [2, 1], [1, 2]]);
-    expect(pieces(L, 1, 1)).toBe('fill0 fill1 inner2 fill3');
-    expect(pieces(L, 2, 1)).toBe('fill0 edge1 outer2 edge2');
+    expect(pieces(L, 1, 1)).toBe('fill fill inner fill');
+    expect(pieces(L, 2, 1)).toBe('fill vertical outer horizontal');
     // The room corner is now fully enclosed.
     expect(wallMask(L, 0, 0) & WallBits.SE).toBeTruthy();
   });
 
-  it('joins walls of different heights into one shape', () => {
-    // Kits build a low wall first and raise it later, so mixed runs are common: no seam between heights.
+  it('steps down from a taller wall to a lower one', () => {
+    // Kits build a low wall first and raise it later, so mixed runs are common. The low wall runs up
+    // to the taller ones either side; they are open toward it, so their edges show the step.
     const st = emptyState('r');
     st.tileOverrides['1,5'] = 'concrete_wall_short';
     st.tileOverrides['2,5'] = 'drywall';
+    st.tileOverrides['2,6'] = 'drywall_short';
     const L = new RoomLayout(room('level1_lobby'), st);
     expect(wallMask(L, 1, 5) & WallBits.W).toBeTruthy();
-    expect(wallMask(L, 0, 5) & WallBits.E).toBeTruthy();
-    expect(wallMask(L, 2, 5) & WallBits.W).toBeTruthy();
+    expect(wallMask(L, 1, 5) & WallBits.E).toBeTruthy();
+    expect(wallMask(L, 0, 5) & WallBits.E).toBeFalsy();
+    expect(wallMask(L, 2, 5) & WallBits.W).toBeFalsy();
+    // A tall wall shows its face above a low wall to its south.
+    expect(pieces(L, 2, 5)).toBe('outer outer outer outer');
+    expect(wallMask(L, 2, 6) & WallBits.N).toBeTruthy();
   });
 });
 
@@ -652,7 +676,6 @@ describe('securing', () => {
     expect(w.rooms[lobby.id]!.barricades[key]).toBeUndefined();
     expect(w.rooms[lobby.id]!.monsters.some((m) => m.door === key)).toBe(true);
     expect(w.rooms[lobby.id]!.insecureSince).toBe(3);
-    expect(getInbox(w, 'p1').messages.some((m) => m.severity === 'urgent' && m.text.startsWith('Breach'))).toBe(true);
   });
 
   it('loses an insecure room at the end of the day after, not the same day', () => {
@@ -662,7 +685,6 @@ describe('securing', () => {
     expect(w.rooms[lobby.id]!.ownerId).toBe('p1');
     applyCommands(w, securingDay(w, { day: 2, rng: new Rng(2) }));
     expect(w.rooms[lobby.id]!.ownerId).toBeNull();
-    expect(getInbox(w, 'p1').messages.some((m) => m.text.startsWith('You lost'))).toBe(true);
     // Secured in time: the deadline clears instead.
     const s2 = setup(42);
     applyCommands(s2.w, securingDay(s2.w, { day: 1, rng: new Rng(1) }));

@@ -1,7 +1,10 @@
 import { Sprite } from 'pixi.js';
-import type { ProjectileDef } from '@df/shared';
+import { TILE_PX, type ProjectileDef, type TrajectoryKind } from '@df/shared';
 import { tex } from '../../engine/assets';
 import { Entity, artPixel, type Team } from './Entity';
+
+/** A straight shot is drawn this many art pixels above the floor it's over: at the height of a body's middle and a little more. */
+const FLIGHT = 12;
 
 export interface ProjectileInit {
   def: ProjectileDef;
@@ -14,6 +17,8 @@ export interface ProjectileInit {
   damage: number;
   knockback: number;
   speedMul?: number;
+  /** How it travels, if not as its def says (a straight shot fired by a flyer flies `high`: `shotTrajectory`). */
+  trajectory?: TrajectoryKind;
   /** For lobbed projectiles: landing point. */
   targetX?: number;
   targetY?: number;
@@ -21,6 +26,8 @@ export interface ProjectileInit {
 
 export class Projectile extends Entity {
   readonly def: ProjectileDef;
+  /** How it travels: what stops it (`blocksProjectiles`). */
+  readonly trajectory: TrajectoryKind;
   damage: number;
   knockback: number;
   pierceLeft: number;
@@ -34,6 +41,7 @@ export class Projectile extends Entity {
   constructor(init: ProjectileInit) {
     super();
     this.def = init.def;
+    this.trajectory = init.trajectory ?? init.def.trajectory;
     this.team = init.team;
     this.x = init.x;
     this.y = init.y;
@@ -45,7 +53,7 @@ export class Projectile extends Entity {
     const speed = init.def.speed * (init.speedMul ?? 1);
     this.vx = init.dx * speed;
     this.vy = init.dy * speed;
-    if (init.def.trajectory === 'lobbed') {
+    if (this.trajectory === 'lobbed') {
       const tx = init.targetX ?? init.x + init.dx * 4;
       const ty = init.targetY ?? init.y + init.dy * 4;
       const d = Math.hypot(tx - init.x, ty - init.y);
@@ -60,10 +68,18 @@ export class Projectile extends Entity {
     this.view.addChild(this.shadow, this.sprite);
   }
 
+  /** How far above its position it's drawn (px). */
+  private get lift(): number {
+    return artPixel(this.z) + (this.lob ? 0 : FLIGHT);
+  }
+
+  override get midY(): number {
+    return this.y - this.lift / TILE_PX;
+  }
+
   override syncView(): void {
     super.syncView();
-    this.sprite.y = -artPixel(this.z) - (this.lob ? 0 : 4);
+    this.sprite.y = -this.lift;
     if (this.def.orient && !this.lob) this.sprite.rotation = Math.atan2(this.vy, this.vx);
-    this.view.zIndex = this.y + 0.5;
   }
 }

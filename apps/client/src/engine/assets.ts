@@ -1,6 +1,5 @@
 import { Rectangle, Texture, TextureStyle } from 'pixi.js';
-import { registry, wallQuarters, type SurfaceDef, type WallPiece } from '@df/shared';
-import { drawLight } from './procedural';
+import { registry, showsFace, viewNames, wallQuarters, type SurfaceDef, type WallPiece } from '@df/shared';
 
 /**
  * Key-based texture registry. Game code only ever refers to sprite keys:
@@ -11,8 +10,10 @@ import { drawLight } from './procedural';
  *   wallshort:<surfaceId> a short wall covered in that wallpaper
  *   auto:<set>:<mask>[:<surfaceId>]  an autotiled wall tile (see world/autotile.ts), composed from
  *                        the pieces in art/walls/<set>/, optionally wallpapered
- *   autogeo:<set>:<mask> the same tile's geometry for shadows (see drawAutotileGeometry)
+ *   autogeo:<set>:<mask>:<base>  the same tile's geometry for lighting and shadows (see drawAutotileGeometry)
  * Swapping art means editing the PNGs, never game code.
+ *
+ * A PNG named `<art>_height` next to a piece of art is its height map (see `heightMap`), not a sprite.
  *
  * Every PNG under art/ is packed into one atlas texture at startup, so the whole game draws from a
  * single GPU texture (sprites batch into few draw calls). Vite bundles the files themselves: adding,
@@ -34,14 +35,14 @@ const animations = new Map<string, string[]>();
 const cache = new Map<string, Texture>();
 const canvasCache = new Map<string, HTMLCanvasElement>();
 const urlCache = new Map<string, string>();
-let lightTexture: Texture | null = null;
 
 /**
- * Wall art, a folder per set (art/walls/<set>/): the 8×8 pieces outer / edge / inner / fill, each drawn
- * as a tile's top-left quarter (open toward north and west), and next to each an optional wallpaper
- * mask (<piece>_mask). Placeholders come from scripts/wall-placeholders.mjs.
+ * Wall art, a folder per set (art/walls/<set>/): the pieces outer / horizontal / vertical / inner /
+ * fill, each drawn as a whole 16×16 tile showing the piece in all four quarters (see world/autotile.ts),
+ * and next to each an optional wallpaper mask (<piece>_mask). Placeholders come from
+ * scripts/wall-placeholders.mjs.
  */
-const WALL_PIECES: WallPiece[] = ['outer', 'edge', 'inner', 'fill'];
+const WALL_PIECES: WallPiece[] = ['outer', 'horizontal', 'vertical', 'inner', 'fill'];
 const wallPiece = (set: string, piece: WallPiece, mask = false) => regions.get(`walls/${set}/${piece}${mask ? '_mask' : ''}`);
 
 export async function loadAssets(): Promise<void> {
@@ -62,10 +63,11 @@ export async function loadAssets(): Promise<void> {
   checkEnemyArt();
 }
 
-/** Every enemy needs its idle art, the frames of each animation it names, and whatever it holds. */
+/** Every enemy needs its idle art and the frames of each animation it names (in each of its views, if it has them), and whatever it holds. */
 function checkEnemyArt(): void {
   for (const def of registry.enemies.all()) {
-    const keys = [def.sprite, ...Object.values(def.anims ?? {}).map((a) => a.frames), ...(def.held ? [def.held.sprite] : [])];
+    const body = [def.sprite, ...Object.values(def.anims ?? {}).map((a) => a.frames)];
+    const keys = [...(def.views ? viewNames(def.views).flatMap((view) => body.map((key) => `${key}/${view}`)) : body), ...(def.held ? [def.held.sprite] : [])];
     for (const key of keys) if (!hasArt(key)) console.error(`[assets] enemy '${def.id}' has no art/${key}.png (or frames ${key}/0.png…)`);
   }
 }
@@ -74,6 +76,7 @@ function checkEnemyArt(): void {
 function checkFurnitureArt(): void {
   for (const def of registry.furniture.all()) {
     if (!hasArt(`${def.sprite}/south`)) console.error(`[assets] furniture '${def.id}' has no art/${def.sprite}/south.png`);
+    for (const view of ['south', 'north', 'side']) heightMap(`${def.sprite}/${view}`);
   }
 }
 
@@ -156,7 +159,7 @@ export function canvasFor(key: string): HTMLCanvasElement {
   } else if (prefix === 'auto') {
     drawAutotile(ctx, name, Number(arg), key.split(':')[3]);
   } else if (prefix === 'autogeo') {
-    drawAutotileGeometry(ctx, name, Number(arg));
+    drawAutotileGeometry(ctx, name, Number(arg), Number(key.split(':')[3] ?? 0));
   } else if (prefix === 'wall' || prefix === 'wallshort') {
     const s = registry.surfaces.tryGet(name);
     if (s) drawSurface(ctx, prefix, s);
@@ -188,94 +191,106 @@ function drawSurface(ctx: CanvasRenderingContext2D, prefix: string, s: SurfaceDe
   ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(1, 15, 15, 1);
 }
 
-/** Copy an 8×8 wall piece (or its wallpaper mask; a piece without one takes no paper) onto `target` at `dx, dy`. */
-function drawPiece(target: CanvasRenderingContext2D, set: string, piece: WallPiece, mask: boolean, dx: number, dy: number) {
-  const r = wallPiece(set, piece, mask);
-  if (r) target.drawImage(atlasCanvas!, r.x, r.y, 8, 8, dx, dy, 8, 8);
+/**
+ * Where a tile's quarter (TL, TR, BR, BL) is in it, px. The upper two are the wall's north edge and the
+ * lower two its south edge, with its face where that's open: they meet at the set's `faceLine`, so a
+ * face may be any height.
+ */
+function quarterAt(q: number, set: string) {
+  const split = faceLine(set);
+  return { x: q === 1 || q === 2 ? 8 : 0, y: q >= 2 ? split : 0, w: 8, h: q >= 2 ? 16 - split : split };
 }
 
-/** Compose a wall tile from its four rotated quarter pieces, then lay wallpaper over the face mask. */
+/** Compose a wall tile (or, with `paperMask`, its wallpaper mask; a piece without one takes no paper) from each quarter's piece. */
+function drawPieces(target: CanvasRenderingContext2D, set: string, pieces: WallPiece[], paperMask: boolean) {
+  pieces.forEach((piece, q) => {
+    const r = wallPiece(set, piece, paperMask);
+    const { x, y, w, h } = quarterAt(q, set);
+    if (r) target.drawImage(atlasCanvas!, r.x + x, r.y + y, w, h, x, y, w, h);
+  });
+}
+
+/** Compose a wall tile from its four quarter pieces, then lay wallpaper over the face mask. */
 function drawAutotile(ctx: CanvasRenderingContext2D, set: string, mask: number, surface?: string) {
   if (!WALL_PIECES.every((p) => wallPiece(set, p))) return missing(ctx);
-  const quarters = wallQuarters(mask);
-  const blit = (target: CanvasRenderingContext2D, paperMask: boolean) =>
-    quarters.forEach(({ piece, rot }, q) => {
-      const qx = q === 1 || q === 2 ? 8 : 0, qy = q >= 2 ? 8 : 0;
-      target.save();
-      target.translate(qx + 4, qy + 4);
-      // The fill has no open side to face: left unturned, its texture runs the same way in every quarter.
-      if (piece !== 'fill') target.rotate((rot * Math.PI) / 2);
-      drawPiece(target, set, piece, paperMask, -4, -4);
-      target.restore();
-    });
-  blit(ctx, false);
+  const pieces = wallQuarters(mask);
+  drawPieces(ctx, set, pieces, false);
   const s = surface ? registry.surfaces.tryGet(surface) : undefined;
   if (!s) return;
   const paper = document.createElement('canvas');
   paper.width = paper.height = 16;
   const p = paper.getContext('2d')!;
   p.imageSmoothingEnabled = false;
-  blit(p, true);
+  drawPieces(p, set, pieces, true);
   p.globalCompositeOperation = 'source-in';
   p.drawImage(canvasFor(s.sprite), 0, 0);
   ctx.drawImage(paper, 0, 0);
 }
 
 /**
- * Face depth of a wall set in pixels: how far the face reaches into the edge piece, read from its
- * wallpaper mask (outline row + masked face rows). Faces run from the floor (depth 0) to the top.
+ * How tall a wall set's face is drawn, in pixels: from the tile's bottom edge up to the wall's top,
+ * read from the horizontal piece's wallpaper mask (the row above its topmost masked one is the top).
  */
 const faceDepthCache = new Map<string, number>();
 function faceDepth(set: string): number {
   let d = faceDepthCache.get(set);
   if (d !== undefined) return d;
   d = 4;
-  if (wallPiece(set, 'edge', true)) {
-    const c = document.createElement('canvas');
-    c.width = c.height = 8;
-    const x = c.getContext('2d', { willReadFrequently: true })!;
-    drawPiece(x, set, 'edge', true, 0, 0);
-    const a = x.getImageData(0, 0, 8, 8).data;
-    let rows = 0;
-    for (let y = 0; y < 8; y++) if (a[(y * 8 + 3) * 4 + 3]! > 0) rows = y;
-    if (rows > 0) d = rows + 1;
+  const r = wallPiece(set, 'horizontal', true);
+  if (r) {
+    const a = atlasCanvas!.getContext('2d')!.getImageData(r.x, r.y, 1, 16).data;
+    const top = Array.from({ length: 16 }, (_, y) => y).find((y) => a[y * 4 + 3]! > 0);
+    if (top !== undefined) d = 16 - top;
   }
   faceDepthCache.set(set, d);
   return d;
 }
 
+/** The row of a wall set's tiles where its top ends and its face begins: the line drawn over the face. */
+const faceLine = (set: string) => 16 - faceDepth(set) - 1;
+
+/** Offsets in shadow geometry are stored in steps of this many pixels either side of 128 (so up to ±63 px). */
+export const GEOMETRY_OFFSET_STEP = 0.5;
+
+/** Which way a pixel of geometry faces, stored in green: 128 for up (floors, tops), 255 for south (front faces). */
+export const facingGreen = (south: boolean) => (south ? 255 : 128);
+
 /**
- * Geometry of an autotiled wall tile, for height-field shadows: per pixel, red is the height up the
- * wall (0 at the floor, 1 on top), green / blue the offset (px, ±16 → 0..1) from where the pixel is
- * drawn to the face it belongs to. Faces are drawn leaning out from the wall but stand at its edge.
+ * One pixel of light and shadow geometry: red is its `height` as a fraction of the thing's (1 on
+ * top), green which way it faces (`south`: a front face, else up; see facingGreen), blue the offset
+ * from where it is drawn to where it stands: always straight down, by `drop` px. A top is drawn as far
+ * above the floor it covers as the thing rises on screen (a wall's face, the part of a piece bodies
+ * step behind: see `depth`). A face is drawn up from its foot but stands just below it, so a pixel
+ * `up` rows above the foot drops `up + 0.5`.
  */
-function drawAutotileGeometry(ctx: CanvasRenderingContext2D, set: string, mask: number) {
-  const D = faceDepth(set);
-  const quarters = wallQuarters(mask);
+function geometryPixel(data: Uint8ClampedArray, i: number, height: number, south: boolean, drop = 0) {
+  data[i] = Math.round(height * 255);
+  data[i + 1] = facingGreen(south);
+  data[i + 2] = 128 + Math.round(drop / GEOMETRY_OFFSET_STEP);
+  data[i + 3] = 255;
+}
+
+/**
+ * Geometry of an autotiled wall tile, for lighting and height-field shadows (see geometryPixel). Its face is drawn
+ * up the tile's bottom rows but stands at the wall's south edge, and climbs to the wall's top from the
+ * floor or from a lower wall's top (`base`, as a fraction of this wall's height). Its top is drawn as
+ * far above the floor it covers as the face is tall, and where the art is clear (above a low wall's
+ * top) there's no wall.
+ */
+function drawAutotileGeometry(ctx: CanvasRenderingContext2D, set: string, mask: number, base: number) {
+  const D = faceDepth(set), split = faceLine(set);
+  const pieces = wallQuarters(mask);
+  const art = canvasFor(`auto:${set}:${mask}`).getContext('2d')!.getImageData(0, 0, 16, 16).data;
   const img = ctx.createImageData(16, 16);
   for (let py = 0; py < 16; py++) {
     for (let px = 0; px < 16; px++) {
-      const q = py < 8 ? (px < 8 ? 0 : 1) : (px < 8 ? 3 : 2);
-      const { piece, rot } = quarters[q]!;
-      // Undo the quarter's rotation to find the pixel in the canonical (top-left) piece.
-      let x = px % 8, y = py % 8;
-      for (let r = 0; r < rot; r++) [x, y] = [y, 7 - x];
-      let z = 1, ox = 0, oy = 0;
-      if (piece === 'edge' && y <= D) {
-        z = y / D; oy = -(y + 0.5);
-      } else if (piece === 'outer' && Math.min(x, y) <= D) {
-        z = Math.min(x, y) / D;
-        if (y <= x) oy = -(y + 0.5); else ox = -(x + 0.5);
-      } else if (piece === 'inner' && x <= D && y <= D) {
-        z = Math.max(x, y) / D; ox = -(x + 0.5); oy = -(y + 0.5);
-      }
-      // Turn the offset back into the tile's frame.
-      for (let r = 0; r < rot; r++) [ox, oy] = [-oy, ox];
+      const q = py < split ? (px < 8 ? 0 : 1) : (px < 8 ? 3 : 2);
+      const up = 15 - py;
+      const face = showsFace(q, pieces[q]!) && up < D;
       const i = (py * 16 + px) * 4;
-      img.data[i] = Math.round(z * 255);
-      img.data[i + 1] = Math.round((0.5 + ox / 32) * 255);
-      img.data[i + 2] = Math.round((0.5 + oy / 32) * 255);
-      img.data[i + 3] = 255;
+      if (art[i + 3]! <= 40) continue;
+      if (face) geometryPixel(img.data, i, base + (up / D) * (1 - base), true, up + 0.5);
+      else geometryPixel(img.data, i, 1, false, D);
     }
   }
   ctx.putImageData(img, 0, 0);
@@ -317,6 +332,30 @@ export function opaqueAt(key: string, x: number, y: number): boolean {
   return x >= 0 && y >= 0 && x < m.w && y < m.h && m.a[y * m.w + x] === 1;
 }
 
+const spanCache = new Map<string, ({ l: number; r: number } | null)[]>();
+/**
+ * A sprite's outline a row at a time, top row first: how far left and right of its middle its solid
+ * pixels reach (px, to pixel centres), or null for a clear row.
+ */
+export function rowSpans(key: string): ({ l: number; r: number } | null)[] {
+  let rows = spanCache.get(key);
+  if (rows) return rows;
+  const c = canvasFor(key);
+  const { width: w, height: h } = c;
+  rows = [];
+  for (let y = 0; y < h; y++) {
+    let l = -1, r = -1;
+    for (let x = 0; x < w; x++) {
+      if (!opaqueAt(key, x, y)) continue;
+      if (l < 0) l = x;
+      r = x;
+    }
+    rows.push(l < 0 ? null : { l: l + 0.5 - w / 2, r: r + 0.5 - w / 2 });
+  }
+  spanCache.set(key, rows);
+  return rows;
+}
+
 const silhouettes = new Map<string, Texture>();
 
 /**
@@ -347,6 +386,160 @@ export function silhouette(key: string): Texture {
   return t;
 }
 
+/** How deep (px) the strip of floor is that an upright sprite blocks light over (see `skyline`). */
+export const SKYLINE_DEPTH = 3;
+
+const skylines = new Map<string, Texture>();
+
+/**
+ * What an upright sprite blocks, standing on its bottom edge: a strip `SKYLINE_DEPTH` px deep and as
+ * wide as the art, where red is how high each column of the art reaches as a fraction of its height
+ * (white otherwise, so a tint sets the rest). The shadow maps draw actors' feet with these, so an actor
+ * casts its outline from where it stands, not from everywhere its sprite is drawn.
+ */
+export function skyline(key: string): Texture {
+  let t = skylines.get(key);
+  if (t) return t;
+  const src = canvasFor(key);
+  const { width: w, height: h } = src;
+  const px = src.getContext('2d')!.getImageData(0, 0, w, h).data;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = SKYLINE_DEPTH;
+  const ctx = c.getContext('2d')!;
+  const img = ctx.createImageData(w, SKYLINE_DEPTH);
+  for (let x = 0; x < w; x++) {
+    let top = 0;
+    while (top < h && px[(top * w + x) * 4 + 3]! <= 40) top++;
+    if (top === h) continue;
+    for (let y = 0; y < SKYLINE_DEPTH; y++) img.data.set([Math.round(((h - top) / h) * 255), 255, 255, 255], (y * w + x) * 4);
+  }
+  ctx.putImageData(img, 0, 0);
+  t = Texture.from(c);
+  t.source.scaleMode = 'nearest';
+  skylines.set(key, t);
+  return t;
+}
+
+/**
+ * How a height map is painted: a top-facing surface in green and a front face in blue, as bright as it
+ * is high: `floor` at the floor and `step` more for each pixel above it (scripts/furniture-heights.mjs
+ * draws the swatches).
+ */
+const HEIGHT_PAINT = { floor: 60, step: 6 };
+
+/**
+ * A piece of art's shape in the game's view (from the south, tilted back), read from the height map
+ * painted next to it: `<art>_height.png`, the same size, in flat colours (see HEIGHT_PAINT):
+ *
+ *   green  a top-facing surface, that many pixels above the floor. It is where it's drawn.
+ *   blue   a front face (facing south) whose foot is that many pixels above the floor. It climbs a
+ *          pixel per row from there, so each column's run of one blue is one face, and it stands just
+ *          below its lowest row: on the floor, or on the top painted there.
+ *
+ * So a bed is a blue foot (0) under a green mattress (4), with a blue headboard (4) and its green top (8).
+ */
+export interface HeightMap {
+  w: number;
+  h: number;
+  /** Per pixel: how high it is, px above the floor (-1: nothing there). */
+  z: Int16Array;
+  /** Per pixel: how far below where it's drawn it stands, px (0 for a top). */
+  drop: Float32Array;
+  /** Per pixel: how tall the piece is there, for what it blocks: a top's height, or the top of the face. */
+  block: Int16Array;
+  /** The highest point, px. */
+  peak: number;
+}
+
+const heightMaps = new Map<string, HeightMap | undefined>();
+
+/** The height map painted for a piece of art, if it has one. */
+export function heightMap(key: string): HeightMap | undefined {
+  if (heightMaps.has(key)) return heightMaps.get(key);
+  const map = hasArt(`${key}_height`) ? readHeightMap(key) : undefined;
+  heightMaps.set(key, map);
+  return map;
+}
+
+function readHeightMap(key: string): HeightMap | undefined {
+  const src = canvasFor(`${key}_height`), art = canvasFor(key);
+  const { width: w, height: h } = src;
+  if (w !== art.width || h !== art.height) {
+    console.error(`[assets] art/${key}_height.png is ${w}×${h}, but its art is ${art.width}×${art.height}`);
+    return undefined;
+  }
+  const px = src.getContext('2d')!.getImageData(0, 0, w, h).data;
+  /** What's painted at a pixel: a front face or a top, and its height (px). */
+  const paint = (x: number, y: number) => {
+    const i = (y * w + x) * 4;
+    if (y < 0 || px[i + 3]! <= 40) return undefined;
+    const front = px[i + 2]! > px[i + 1]!;
+    return { front, height: Math.max(0, Math.round((px[i + (front ? 2 : 1)]! - HEIGHT_PAINT.floor) / HEIGHT_PAINT.step)) };
+  };
+  const map: HeightMap = { w, h, z: new Int16Array(w * h).fill(-1), drop: new Float32Array(w * h), block: new Int16Array(w * h).fill(-1), peak: 0 };
+  for (let x = 0; x < w; x++) {
+    for (let y = h - 1; y >= 0; y--) {
+      const p = paint(x, y);
+      if (!p) continue;
+      // A face is the run of one blue up this column from here; a top is a single pixel.
+      let top = y;
+      if (p.front) for (let n = paint(x, top - 1); n?.front && n.height === p.height; n = paint(x, top - 1)) top--;
+      const tall = p.front ? p.height + (y - top + 1) : p.height;
+      for (let r = top; r <= y; r++) {
+        const i = r * w + x;
+        map.z[i] = p.front ? p.height + (y - r) : p.height;
+        map.drop[i] = p.front ? y - r + 0.5 : 0;
+        map.block[i] = tall;
+      }
+      map.peak = Math.max(map.peak, tall);
+      y = top;
+    }
+  }
+  return map;
+}
+
+const heightTextures = new Map<string, Texture>();
+
+function heightTexture(cacheKey: string, map: HeightMap, pixel: (data: Uint8ClampedArray, i: number, at: number) => void): Texture {
+  let t = heightTextures.get(cacheKey);
+  if (t) return t;
+  const c = document.createElement('canvas');
+  c.width = map.w;
+  c.height = map.h;
+  const ctx = c.getContext('2d')!;
+  const img = ctx.createImageData(map.w, map.h);
+  for (let at = 0; at < map.z.length; at++) if (map.z[at]! >= 0) pixel(img.data, at * 4, at);
+  ctx.putImageData(img, 0, 0);
+  t = Texture.from(c);
+  t.source.scaleMode = 'nearest';
+  heightTextures.set(cacheKey, t);
+  return t;
+}
+
+/**
+ * A height-mapped sprite's light and shadow geometry (see geometryPixel), standing `base` px up (on a tabletop),
+ * with heights as fractions of `total` px and its tops drawn `topDrop` px above the floor they cover.
+ */
+export function heightSurface(key: string, map: HeightMap, base: number, total: number, topDrop: number): Texture {
+  return heightTexture(`surface|${key}|${base}|${total}|${topDrop}`, map, (data, i, at) => {
+    // Only a front face drops by its own rows; a top drops as far as the piece's tops do.
+    const face = map.drop[at]! > 0;
+    geometryPixel(data, i, (base + map.z[at]!) / total, face, face ? map.drop[at]! : topDrop);
+  });
+}
+
+/**
+ * What a height-mapped sprite blocks: how tall it is at each pixel, as a fraction of `total` px in red
+ * (white otherwise, so a tint sets the rest), standing `base` px up.
+ */
+export function heightOccluder(key: string, map: HeightMap, base: number, total: number): Texture {
+  return heightTexture(`occluder|${key}|${base}|${total}`, map, (data, i, at) => {
+    data[i] = Math.round(((base + map.block[at]!) / total) * 255);
+    data[i + 1] = data[i + 2] = data[i + 3] = 255;
+  });
+}
+
 /** Data URL for DOM icons. */
 export function iconUrl(key: string): string {
   let u = urlCache.get(key);
@@ -357,7 +550,3 @@ export function iconUrl(key: string): string {
   return u;
 }
 
-export function lightTex(): Texture {
-  if (!lightTexture) lightTexture = Texture.from(drawLight(128));
-  return lightTexture;
-}

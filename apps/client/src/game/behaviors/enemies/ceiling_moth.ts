@@ -1,5 +1,5 @@
 import { defineBrain, enter, type Phased } from '../brain';
-import { between, go, toPlayer, type Range } from '../steering';
+import { between, fleeDir, go, toPlayer, type Range } from '../steering';
 
 interface Params {
   /** Flutters away while the player is nearer than this (tiles). */
@@ -39,8 +39,9 @@ export const ceilingMoth = defineBrain<Params, State>({
       case 'flutter':
         s.wobbleIn -= dt;
         if (s.wobbleIn <= 0 || e.bumped) {
-          // Mostly away from the player when they're close; anywhere at all otherwise.
-          const away = d < p.keepAway ? angle + Math.PI : Math.random() * Math.PI * 2;
+          // Mostly away from the player when they're close (the open way most directly away); anywhere at all otherwise.
+          const flight = fleeDir(ctx);
+          const away = d >= p.keepAway ? Math.random() * Math.PI * 2 : flight.x || flight.y ? Math.atan2(flight.y, flight.x) : angle + Math.PI;
           s.heading = away + (Math.random() - 0.5) * 2.2;
           s.wobbleIn = p.wobble * (0.6 + Math.random() * 0.8);
         }
@@ -48,7 +49,7 @@ export const ceilingMoth = defineBrain<Params, State>({
         if (s.t >= s.until) enter(s, 'windup');
         break;
       case 'windup':
-        e.pose('windup', p.windup);
+        e.pose('windup');
         if (s.t >= p.windup) {
           s.heading = angle;
           s.swoopTime = (d + p.overshoot) / p.swoopSpeed;

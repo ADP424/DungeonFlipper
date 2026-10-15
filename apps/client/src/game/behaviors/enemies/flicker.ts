@@ -1,4 +1,4 @@
-import { registry, type ProjectileDef } from '@df/shared';
+import { registry, shotTrajectory, type ProjectileDef } from '@df/shared';
 import { fan } from '../actions';
 import { defineBrain, enter, type Phased } from '../brain';
 import { between, circle, coin, rad, toPlayer, type Range } from '../steering';
@@ -55,9 +55,10 @@ export const flicker = defineBrain<Params, State>({
         e.alpha = 0;
         if (s.t < s.until) break;
         const pl = game.player;
+        const shot = shotTrajectory(s.projectile, e.movementKind);
         const spot = game.room.randomOpenTile((x, y) => {
           const d = Math.hypot(x + 0.5 - pl.x, y + 0.5 - pl.y);
-          return d >= p.near && d <= p.far && game.room.lineClear(x + 0.5, y + 0.5, pl.x, pl.y, 'straight');
+          return d >= p.near && d <= p.far && game.room.lineClear(x + 0.5, y + 0.5, pl.x, pl.y, shot);
         }, e.movementKind);
         if (spot) {
           e.x = spot.x + 0.5;

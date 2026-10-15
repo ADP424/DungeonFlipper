@@ -1,18 +1,21 @@
 import { Container } from 'pixi.js';
 import {
-  AreaLayout, CELL_H, CELL_W, inward, isOwnedBy, tileKey,
+  AreaLayout, CELL_H, CELL_W, RoomLayout, inward, isOwnedBy, tileKey,
   type DoorInfo, type FurniturePlacement, type MovementKind, type RoomInfo, type RoomState, type TrajectoryKind, type WorldState,
 } from '@df/shared';
 import { lineClear, type PointBlockedFn, type Solid, type SolidsFn } from '../engine/collision';
 import { RoomRenderer, furnitureArtHit, furnitureDepth } from '../render/RoomRenderer';
 import type { Enemy } from './entities/Enemy';
+import { Pathing } from './Pathing';
+
+const TRAJECTORIES: ReadonlySet<string> = new Set<TrajectoryKind>(['straight', 'high', 'lobbed']);
+/** Whether a mode `lineClear` asks about is a shot rather than a way of moving. */
+const isTrajectory = (mode: TrajectoryKind | MovementKind): mode is TrajectoryKind => TRAJECTORIES.has(mode);
 import type { GroundItemEntity } from './entities/GroundItemEntity';
 import type { Projectile } from './entities/Projectile';
 import type { Puddle } from './entities/Puddle';
 import type { StaffNpc } from './entities/StaffNpc';
 import type { TenantNpc } from './entities/TenantNpc';
-
-const DIRS8: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 
 /**
  * Runtime state of the area the player is in: a single dungeon room, or the whole estate (every
@@ -34,20 +37,18 @@ export class AreaRuntime {
   readonly staff: StaffNpc[] = [];
   /** Tiles just outside doors that lead out of the area (the partner door tiles) → door. */
   readonly exits = new Map<string, DoorInfo>();
-  /** Decides whether the player may walk through a given exit (e.g. not while carrying into unowned rooms). */
+  private beyond = new Map<string, RoomLayout>();
   /** The room the player is in. */
   currentId: string;
 
-  private flow: Int32Array = new Int32Array(1);
-  private flowFrom = '';
-  private flowAge = 0;
+  /** How monsters find their way around the active rooms. */
+  readonly paths = new Pathing(this);
   private blockers = new Map<string, SolidsFn>();
-  player!: { x: number; y: number };
 
   /** `viewerId`: the player this runtime is shown to (ownership checks are from their point of view). */
   constructor(
     private readonly world: WorldState, readonly floor: number, roomIds: string[], currentId: string,
-    private readonly layers: { floor: Container; walls: Container; entities: Container }, readonly viewerId: string,
+    private readonly layers: { floor: Container; entities: Container }, readonly viewerId: string,
   ) {
     this.layout = new AreaLayout(world, floor, roomIds);
     this.currentId = currentId;
@@ -118,6 +119,22 @@ export class AreaRuntime {
   }
 
   /**
+   * The door out of the area whose doorway a tile outside it is in: the tile past the door, or the
+   * one south of that, where the wall beside the doorway leaves floor to stand on behind it.
+   */
+  exitAt(tx: number, ty: number): DoorInfo | undefined {
+    return this.exits.get(tileKey(tx, ty)) ?? this.exits.get(tileKey(tx, ty - 1));
+  }
+
+  /** The layout of a room behind an exit, for what is solid on the far side of its doorway. */
+  private beyondLayout(roomId: string): RoomLayout | undefined {
+    let L = this.beyond.get(roomId);
+    const info = this.world.floors[this.floor]?.rooms[roomId], state = this.world.rooms[roomId];
+    if (!L && info && state) this.beyond.set(roomId, (L = new RoomLayout(info, state)));
+    return L;
+  }
+
+  /**
    * Switch the active rooms (those near the camera): renderers are created and destroyed to match,
    * and pathing covers the new bounds. Returns which rooms came and went; the game spawns and parks
    * their entities.
@@ -133,13 +150,11 @@ export class AreaRuntime {
     for (const id of added) {
       const r = new RoomRenderer(this.layout.layouts.get(id)!, this.layers.entities);
       this.layers.floor.addChild(r.floor);
-      this.layers.walls.addChild(r.walls);
       this.renderers.set(id, r);
     }
     if (added.length || removed.length) {
       this.layout.setActive(ids);
-      this.flow = new Int32Array(this.layout.w * this.layout.h);
-      this.flowFrom = '';
+      this.paths.invalidate();
     }
     return { added, removed };
   }
@@ -179,7 +194,13 @@ export class AreaRuntime {
       const whole = (tx: number, ty: number): Solid[] => [{ x: tx, y: ty, w: 1, h: 1 }];
       fn = (tx, ty) => {
         const k = this.layout.kindAt(tx, ty);
-        if (k === 'void') return this.exits.get(tileKey(tx, ty)) && who === 'player' ? [] : whole(tx, ty);
+        if (k === 'void') {
+          if (who !== 'player') return whole(tx, ty);
+          if (this.exits.has(tileKey(tx, ty))) return [];
+          // South of an exit the doorway is as open as the wall there leaves it: the room beyond says.
+          const d = this.exits.get(tileKey(tx, ty - 1));
+          return d ? this.beyondLayout(d.toRoom)?.solidsAt(tx, ty, kind) ?? whole(tx, ty) : whole(tx, ty);
+        }
         if (who === 'enemy' && k === 'door' && !this.isInternalDoor(tx, ty)) return whole(tx, ty);
         return this.layout.solidsAt(tx, ty, kind);
       };
@@ -210,95 +231,22 @@ export class AreaRuntime {
 
   lineClear(ax: number, ay: number, bx: number, by: number, mode: TrajectoryKind | MovementKind): boolean {
     const blocked: PointBlockedFn =
-      mode === 'straight' || mode === 'lobbed'
+      isTrajectory(mode)
         ? (x, y) => this.layout.blocksProjectileAt(x, y, mode)
         : (x, y) => this.blockedAt(x, y, mode, 'enemy') || !!this.layout.obstacleAt(Math.floor(x), Math.floor(y))?.hazard?.affects.includes(mode);
     return lineClear(ax, ay, bx, by, blocked);
   }
 
-  /** Walkers path around hazards too. */
-  private walkBlocked(tx: number, ty: number, kind: MovementKind): boolean {
-    if (this.layout.blocksMovement(tx, ty, kind)) return true;
-    const o = this.layout.obstacleAt(tx, ty);
-    return !!o?.hazard?.affects.includes(kind);
-  }
-
-  private idx(x: number, y: number): number {
-    return (y - this.layout.originY) * this.layout.w + (x - this.layout.originX);
-  }
-
-  /** BFS distance field to the player over walkable, hazard-free tiles of the active rooms. */
-  updateFlow(dt: number): void {
-    this.flowAge += dt;
-    const px = Math.floor(this.player.x), py = Math.floor(this.player.y);
-    const from = `${px},${py}`;
-    if (from === this.flowFrom && this.flowAge < 0.5) return;
-    this.flowFrom = from;
-    this.flowAge = 0;
-    this.flow.fill(-1);
-    const L = this.layout;
-    if (!L.inBounds(px, py)) return;
-    const qx: number[] = [px], qy: number[] = [py];
-    this.flow[this.idx(px, py)] = 0;
-    for (let h = 0; h < qx.length; h++) {
-      const x = qx[h]!, y = qy[h]!;
-      const d = this.flow[this.idx(x, y)]!;
-      for (const [dx, dy] of DIRS8) {
-        const nx = x + dx, ny = y + dy;
-        if (!L.inBounds(nx, ny) || this.flow[this.idx(nx, ny)] !== -1) continue;
-        if (this.walkBlocked(nx, ny, 'walk')) continue;
-        if (dx && dy && (this.walkBlocked(x + dx, y, 'walk') || this.walkBlocked(x, y + dy, 'walk'))) continue;
-        this.flow[this.idx(nx, ny)] = d + 1;
-        qx.push(nx);
-        qy.push(ny);
-      }
-    }
-  }
-
-  flowAt(x: number, y: number): number {
-    return this.layout.inBounds(x, y) ? this.flow[this.idx(x, y)]! : -1;
-  }
-
-  /** Unit direction an enemy should move to reach the player. */
-  pathDir(e: Enemy): { x: number; y: number } {
-    const dx = this.player.x - e.x, dy = this.player.y - e.y;
-    const d = Math.hypot(dx, dy) || 1;
-    const direct = { x: dx / d, y: dy / d };
-    if (e.movementKind === 'fly' || this.lineClear(e.x, e.y, this.player.x, this.player.y, 'walk')) return direct;
-    const tx = Math.floor(e.x), ty = Math.floor(e.y);
-    let best = this.flowAt(tx, ty);
-    let bx = 0, by = 0;
-    for (const [ox, oy] of DIRS8) {
-      const v = this.flowAt(tx + ox, ty + oy);
-      if (v < 0) continue;
-      if (ox && oy && (this.flowAt(tx + ox, ty) < 0 || this.flowAt(tx, ty + oy) < 0)) continue;
-      if (best < 0 || v < best) {
-        best = v;
-        bx = tx + ox;
-        by = ty + oy;
-      }
-    }
-    if (bx === 0 && by === 0) return direct;
-    const vx = bx + 0.5 - e.x, vy = by + 0.5 - e.y;
-    const l = Math.hypot(vx, vy) || 1;
-    return { x: vx / l, y: vy / l };
-  }
-
-  /** Next orthogonal tile for grid-stepping enemies. */
-  nextGridStep(e: Enemy): { x: number; y: number } | null {
-    const tx = Math.floor(e.x), ty = Math.floor(e.y);
-    const here = this.flowAt(tx, ty);
-    const options: { x: number; y: number; v: number }[] = [];
-    for (const [dx, dy] of DIRS8.slice(0, 4)) {
-      const nx = tx + dx, ny = ty + dy;
-      const k = this.layout.kindAt(nx, ny);
-      if (this.walkBlocked(nx, ny, e.movementKind) || (k !== 'floor' && !(k === 'door' && this.isInternalDoor(nx, ny)))) continue;
-      options.push({ x: nx, y: ny, v: this.flowAt(nx, ny) });
-    }
-    if (!options.length) return null;
-    const better = options.filter((o) => o.v >= 0 && (here < 0 || o.v < here));
-    const pool = better.length && Math.random() < 0.85 ? better : options;
-    return pool[Math.floor(Math.random() * pool.length)]!;
+  /**
+   * Whether a monster moving this way may stand on a tile, for pathing and spawn spots: inside the area
+   * (not past a door out of it), not blocked for its kind, and not a hazard to it (walkers go round
+   * broken glass; flyers cross it, and holes, and short walls).
+   */
+  passable(tx: number, ty: number, kind: MovementKind): boolean {
+    const k = this.layout.kindAt(tx, ty);
+    if (k === 'void' || (k === 'door' && !this.isInternalDoor(tx, ty))) return false;
+    if (this.layout.blocksMovement(tx, ty, kind)) return false;
+    return !this.layout.obstacleAt(tx, ty)?.hazard?.affects.includes(kind);
   }
 
   /** Move-speed multiplier for the player at a point: the worst puddle they're standing in. */
@@ -311,7 +259,7 @@ export class AreaRuntime {
   randomOpenTile(filter: (x: number, y: number) => boolean, kind: MovementKind = 'walk'): { x: number; y: number } | null {
     const tiles: { x: number; y: number }[] = [];
     for (const t of this.layout.tiles()) {
-      if (t.kind !== 'floor' || this.walkBlocked(t.x, t.y, kind)) continue;
+      if (t.kind !== 'floor' || !this.passable(t.x, t.y, kind)) continue;
       if (filter(t.x, t.y)) tiles.push(t);
     }
     return tiles.length ? tiles[Math.floor(Math.random() * tiles.length)]! : null;

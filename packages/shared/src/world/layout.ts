@@ -1,4 +1,4 @@
-import { CELL_H, CELL_W } from '../core/constants';
+import { CELL_H, CELL_W, TILE_PX } from '../core/constants';
 import { tileKey } from '../core/geometry';
 import { legendFor, templateMapSize } from '../content';
 import { BACKROOMS_SURFACES } from './difficulty';
@@ -239,6 +239,31 @@ export class RoomLayout {
     return this.kindAt(x, y) === 'door' ? this.state.barricades[tileKey(x, y)] : undefined;
   }
 
+  /**
+   * The solid part of a tile that blocks as a whole: all of it, or for an obstacle with a `depth` and
+   * nothing standing behind it (to the north), only that much at the tile's south edge.
+   */
+  tileSolid(x: number, y: number): Box {
+    const depth = (this.obstacleAt(x, y)?.depth ?? TILE_PX) / TILE_PX;
+    const behind = this.obstacleAt(x, y - 1);
+    const open = depth < 1 && this.kindAt(x, y) !== 'void' && this.kindAt(x, y - 1) !== 'void' && (!behind || behind.height === 'none');
+    return open ? { x, y: y + 1 - depth, w: 1, h: depth } : { x, y, w: 1, h: 1 };
+  }
+
+  /**
+   * Where a standing tile sorts in depth among actors (who sort by their feet): the back edge of the
+   * floor it stands on, so only what is behind that is drawn under it, never a body beside it. A wall
+   * that is solid throughout but runs on east or west into one with a back takes that one's edge:
+   * what is behind a wall is behind the corner it ends in too.
+   */
+  backEdge(x: number, y: number): number {
+    for (const dx of [0, -1, 1]) {
+      const o = this.obstacleAt(x + dx, y);
+      if (o && o.height !== 'none' && this.tileSolid(x + dx, y).y > y) return this.tileSolid(x + dx, y).y;
+    }
+    return y;
+  }
+
   /** Whole-tile blockers for walking: void, planks, obstacles (furniture is boxes, see `solidsAt`). */
   private tileBlocksMovement(x: number, y: number, kind: MovementKind): boolean {
     const k = this.kindAt(x, y);
@@ -272,9 +297,9 @@ export class RoomLayout {
     return this.tileBlocksMovement(x, y, kind) || this.furnitureSolidAt(x + 0.5, y + 0.5, (d) => d.blocksMovement.includes(kind));
   }
 
-  /** The solid shapes on a tile for a walker or flyer (world tiles): the whole tile, or furniture's boxes. */
+  /** The solid shapes on a tile for a walker or flyer (world tiles): the tile's own (`tileSolid`), or furniture's boxes. */
   solidsAt(x: number, y: number, kind: MovementKind): Box[] {
-    if (this.tileBlocksMovement(x, y, kind)) return [{ x, y, w: 1, h: 1 }];
+    if (this.tileBlocksMovement(x, y, kind)) return [this.tileSolid(x, y)];
     return (this.furnitureSolids.get(tileKey(x, y)) ?? []).filter(({ def }) => def.blocksMovement.includes(kind)).map(({ box }) => box);
   }
 
@@ -285,7 +310,9 @@ export class RoomLayout {
 
   /** Whether a projectile at a point (tiles) is stopped there. */
   blocksProjectileAt(px: number, py: number, trajectory: TrajectoryKind): boolean {
-    return this.tileBlocksProjectile(Math.floor(px), Math.floor(py), trajectory) || this.furnitureSolidAt(px, py, (d) => d.blocksProjectiles.includes(trajectory));
+    const x = Math.floor(px), y = Math.floor(py);
+    if (this.tileBlocksProjectile(x, y, trajectory)) return py >= this.tileSolid(x, y).y;
+    return this.furnitureSolidAt(px, py, (d) => d.blocksProjectiles.includes(trajectory));
   }
 
   /** True when the tile is plain floor: no obstacle, no furniture, not void. */

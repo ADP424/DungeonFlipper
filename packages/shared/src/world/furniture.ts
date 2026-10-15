@@ -94,10 +94,28 @@ export function turnAround(def: FurnitureDef, x: number, y: number, rot: number,
   return { x: x + from.x - to.x, y: y + from.y - to.y, rot: next };
 }
 
-/** A piece's solid boxes where it stands, in tiles (world coordinates), for its facing. */
+/** How much floor a piece stands on in a facing, front to back, in tiles (see `FurnitureDef.depth`). */
+export function baseDepth(def: FurnitureDef, rot: number): number {
+  const turns = ((rot % 4) + 4) % 4;
+  const deep = turns % 2 === 0 ? def.size.h : def.size.w;
+  if (def.depth === undefined) return deep;
+  const px = typeof def.depth === 'number' ? def.depth : turns % 2 === 1 ? def.depth.side : turns === 0 ? def.depth.south : def.depth.north;
+  return Math.min(deep, px / TILE_PX);
+}
+
+/**
+ * A piece's solid boxes where it stands, in tiles (world coordinates), for its facing: its `collision`
+ * boxes turned with it, else the bottom `depth` of its footprint.
+ */
 export function solidBoxes(def: FurnitureDef, p: { x: number; y: number; rot: number }): Box[] {
+  if (!def.collision) {
+    const turned = p.rot % 2 !== 0;
+    const w = turned ? def.size.h : def.size.w, h = turned ? def.size.w : def.size.h;
+    const d = baseDepth(def, p.rot);
+    return [{ x: p.x, y: p.y + h - d, w, h: d }];
+  }
   const W = def.size.w * TILE_PX, H = def.size.h * TILE_PX;
-  return (def.collision ?? [{ x: 0, y: 0, w: W, h: H }]).map((b) => {
+  return def.collision.map((b) => {
     const t = turnBox(b, W, H, p.rot);
     return { x: p.x + t.x / TILE_PX, y: p.y + t.y / TILE_PX, w: t.w / TILE_PX, h: t.h / TILE_PX };
   });

@@ -1,26 +1,29 @@
 /**
- * Collision for circle-ish bodies (resolved as axis-aligned boxes of half-size r) against solid boxes.
- * A wall is its whole tile; furniture is the boxes its def gives (a lamp only at its base).
+ * Collision for bodies against solid boxes. A body collides where it stands: its footing, a strip of
+ * floor at its position (its feet), so it can walk right up to a thing's base and step behind what
+ * rises above it. A solid is the floor a thing stands on (its `depth`; a lamp only its stand).
  */
 export interface Solid { x: number; y: number; w: number; h: number }
 /** The solid boxes on a tile, in tiles (world coordinates). */
 export type SolidsFn = (tx: number, ty: number) => readonly Solid[];
 /** Whether a point (tiles) is inside something solid. */
 export type PointBlockedFn = (x: number, y: number) => boolean;
+/** The floor a body stands on, in tiles: `half` either side of its position, and `depth` back (north) from it. */
+export interface Footing { half: number; depth: number }
 
 const EPS = 1e-4;
 
 export interface MoveResult { x: number; y: number; hitX: boolean; hitY: boolean }
 
-export function moveAndCollide(x: number, y: number, r: number, dx: number, dy: number, solids: SolidsFn): MoveResult {
+export function moveAndCollide(x: number, y: number, f: Footing, dx: number, dy: number, solids: SolidsFn): MoveResult {
   let hitX = false, hitY = false;
-  // Sub-step large moves so fast bodies can't tunnel through things (a body is ~0.6 tiles wide).
-  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 0.25));
+  // Sub-step large moves so fast bodies can't tunnel through things (a footing and a lamp's stand are a few pixels deep).
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 0.125));
   const sx = dx / steps, sy = dy / steps;
   for (let i = 0; i < steps; i++) {
-    const rx = axis(x, y, r, sx, true, solids);
+    const rx = axis(x, y, f, sx, true, solids);
     x = rx.v; hitX ||= rx.hit;
-    const ry = axis(x, y, r, sy, false, solids);
+    const ry = axis(x, y, f, sy, false, solids);
     y = ry.v; hitY ||= ry.hit;
   }
   return { x, y, hitX, hitY };
@@ -37,26 +40,21 @@ function* solidsIn(x0: number, y0: number, x1: number, y1: number, solids: Solid
   }
 }
 
-function axis(x: number, y: number, r: number, d: number, isX: boolean, solids: SolidsFn): { v: number; hit: boolean } {
+function axis(x: number, y: number, f: Footing, d: number, isX: boolean, solids: SolidsFn): { v: number; hit: boolean } {
   if (d === 0) return { v: isX ? x : y, hit: false };
   const nx = isX ? x + d : x;
   const ny = isX ? y : y + d;
   // Solids already overlapped before this move are ignored, so a body that ends up inside something
   // (e.g. a wall built around it) can always walk back out.
   let v = isX ? nx : ny, hit = false;
-  for (const s of solidsIn(nx - r, ny - r, nx + r, ny + r, solids)) {
-    if (overlaps(s, x - r, y - r, x + r, y + r)) continue;
+  for (const s of solidsIn(nx - f.half, ny - f.depth, nx + f.half, ny, solids)) {
+    if (overlaps(s, x - f.half, y - f.depth, x + f.half, y)) continue;
     // Stop at the nearest face in the direction of travel.
-    const stop = isX ? (d > 0 ? s.x - r - EPS : s.x + s.w + r + EPS) : (d > 0 ? s.y - r - EPS : s.y + s.h + r + EPS);
+    const stop = isX ? (d > 0 ? s.x - f.half - EPS : s.x + s.w + f.half + EPS) : (d > 0 ? s.y - EPS : s.y + s.h + f.depth + EPS);
     if (!hit || (d > 0 ? stop < v : stop > v)) v = stop;
     hit = true;
   }
   return { v, hit };
-}
-
-/** True if a box of half-size r at (x,y) overlaps anything solid. */
-export function overlapsBlocked(x: number, y: number, r: number, solids: SolidsFn): boolean {
-  return !solidsIn(x - r, y - r, x + r, y + r, solids).next().done;
 }
 
 /** Ray march between two points (every 0.2 tiles); true when nothing along the way blocks. */

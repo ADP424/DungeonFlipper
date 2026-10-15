@@ -137,6 +137,39 @@ describe('furniture collision', () => {
     }
   });
 
+  it('stands on its depth of floor, at the bottom of its footprint in every facing', () => {
+    const dresser = registry.furniture.get('dresser');
+    expect(solidBoxes(dresser, { x: 5, y: 3, rot: 0 })).toEqual([{ x: 5, y: 3 + 6 / 16, w: 1, h: 10 / 16 }]);
+    expect(solidBoxes(dresser, { x: 5, y: 3, rot: 1 })).toEqual([{ x: 5, y: 3 + 6 / 16, w: 1, h: 10 / 16 }]);
+    // A bed's views differ: lengthways it covers most of two tiles, sideways most of one.
+    const bed = registry.furniture.get('bed');
+    expect(solidBoxes(bed, { x: 5, y: 3, rot: 2 })).toEqual([{ x: 5, y: 3 + 4 / 16, w: 1, h: 28 / 16 }]);
+    expect(solidBoxes(bed, { x: 5, y: 3, rot: 3 })).toEqual([{ x: 5, y: 3 + 4 / 16, w: 2, h: 12 / 16 }]);
+    // Bodies and shots pass behind it; the tile still counts as blocked (its centre is covered).
+    const L = roomWith({ uid: 'w', defId: 'dresser', x: 5, y: 3, rot: 0 });
+    expect(L.blocksMovement(5, 3, 'walk')).toBe(true);
+    expect(L.blocksProjectileAt(5.5, 3 + 3 / 16, 'straight')).toBe(false);
+  });
+
+  it('lets bodies step behind a wall, unless something stands behind it', () => {
+    const L = roomWith();
+    L.state.tileOverrides['5,4'] = 'backrooms_wall';
+    L.state.tileOverrides['8,4'] = 'backrooms_wall';
+    L.state.tileOverrides['8,3'] = 'backrooms_wall_short';
+    expect(L.solidsAt(5, 4, 'walk')).toEqual([{ x: 5, y: 4 + 10 / 16, w: 1, h: 6 / 16 }]);
+    // It sorts at that back edge, and so does the wall it runs into, which has no back of its own.
+    L.state.tileOverrides['7,4'] = 'backrooms_wall';
+    expect(L.backEdge(5, 4)).toBe(4 + 10 / 16);
+    expect(L.backEdge(8, 4)).toBe(4 + 10 / 16);
+    expect(L.backEdge(8, 3)).toBe(3 + 10 / 16);
+    expect(L.blocksProjectileAt(5.5, 4.5, 'straight')).toBe(false);
+    expect(L.blocksProjectileAt(5.5, 4.75, 'straight')).toBe(true);
+    expect(L.blocksMovement(5, 4, 'walk')).toBe(true);
+    // A wall with a wall behind it, and the room's north wall (nothing but void behind), are solid throughout.
+    expect(L.solidsAt(8, 4, 'walk')).toEqual([{ x: 8, y: 4, w: 1, h: 1 }]);
+    expect(L.solidsAt(5, 0, 'walk')).toEqual([{ x: 5, y: 0, w: 1, h: 1 }]);
+  });
+
   it('turns collision boxes with the piece', () => {
     const lamp = registry.furniture.get('floor_lamp');
     // Facing west, the stand is on the left of the tile.

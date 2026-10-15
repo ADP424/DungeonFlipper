@@ -252,18 +252,15 @@ export function realtorsDay(state: WorldState, ctx: { day: number; rng: Rng }): 
 }
 
 /**
- * Every 15-minute tick: hostile realtors send thugs to rob one of your rooms (an urgent message gives
- * you two hours to get there and fight them off); a raid nobody stops ends with up to three pieces of
- * furniture carried off to the realtor's office.
+ * Every 15-minute tick: hostile realtors send thugs to rob one of your rooms (you have two hours to get
+ * there and fight them off); a raid nobody stops ends with up to three pieces of furniture carried off
+ * to the realtor's office.
  */
 export function realtorsTick(state: WorldState, ctx: { clock: { day: number; minute: number }; rng: Rng }): Command[] {
   const out: Command[] = [];
   const { rng, clock } = ctx;
   const now = absoluteMinute(clock);
   const owner = state.ownerId;
-  const note = (text: string, severity: 'info' | 'warn' | 'urgent'): Command => ({
-    type: 'messagePosted', playerId: owner, message: { id: rid(rng, 'msg'), day: clock.day, minute: clock.minute, severity, text },
-  });
   for (const r of Object.values(getRealtors(state))) {
     const floor = state.floors[r.floor];
     if (!floor) continue;
@@ -273,7 +270,6 @@ export function realtorsTick(state: WorldState, ctx: { clock: { day: number; min
       const info = floor.rooms[r.raid.roomId];
       const office = state.rooms[r.officeRoomId];
       const officeInfo = floor.rooms[r.officeRoomId];
-      const taken: string[] = [];
       if (room && info && room.ownerId === owner && office && officeInfo) {
         const scratch = structuredClone(office);
         for (const f of rng.shuffle(stealable(room.furniture)).slice(0, RAID_STEALS)) {
@@ -286,11 +282,9 @@ export function realtorsTick(state: WorldState, ctx: { clock: { day: number; min
             scratch.furniture.push(placed);
             out.push({ type: 'furniturePlaced', roomId: office.id, placement: placed });
           }
-          taken.push(def.name);
         }
       }
       out.push({ type: 'realtorSet', realtor: { ...r, raid: undefined } });
-      if (taken.length && info) out.push(note(`${r.name}'s thugs got away with ${taken.join(', ')} from ${roomLabel(info)}. It's in their office now.`, 'warn'));
       continue;
     }
     if (stanceOf(r) !== 'hostile' || !rng.chance(RAID_CHANCE)) continue;
@@ -302,7 +296,6 @@ export function realtorsTick(state: WorldState, ctx: { clock: { day: number; min
     const target = rng.pick(targets);
     const thugs = 2 + Math.floor(realtorRooms(state, r.id).length / 3);
     out.push({ type: 'realtorSet', realtor: { ...r, raid: { roomId: target.id, until: now + RAID_MINUTES, thugs } } });
-    out.push(note(`${r.name}'s thugs are breaking into ${roomLabel(floor.rooms[target.id]!)}! Get there in the next two hours and run them off, or they'll take your furniture.`, 'urgent'));
   }
   return out;
 }

@@ -26,7 +26,7 @@ export default {
   contactDamage: 2,
   anims: {
     windup: { frames: 'enemies/security_guard/windup' },
-    stunned: { frames: 'enemies/security_guard/stunned', fps: 6, loop: true },
+    stunned: { frames: 'enemies/security_guard/stunned', loop: true },
   },
   held: { sprite: 'enemies/security_guard/held', grip: 'aimed' },
   loot: [

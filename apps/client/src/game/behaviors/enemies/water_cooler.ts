@@ -1,7 +1,7 @@
 import { registry, type ProjectileDef } from '@df/shared';
 import { ring, shoot } from '../actions';
 import { defineBrain, enter, type Phased } from '../brain';
-import { chase, toPlayer } from '../steering';
+import { chase, clearShot, toPlayer } from '../steering';
 
 interface Params {
   /** Stops closing in at this distance (tiles). */
@@ -50,10 +50,13 @@ export const waterCooler = defineBrain<Params, State>({
     s.hp = e.hp;
     const { d, angle } = toPlayer(ctx);
     switch (s.phase) {
-      case 'lumber':
-        if (d > p.keepAway) chase(ctx);
-        if (s.lobIn <= 0 && d <= p.range) enter(s, 'windup');
+      case 'lumber': {
+        // A glob goes over anything short, but not a tall wall: it comes round until one would land.
+        const open = clearShot(ctx, s.glob);
+        if (d > p.keepAway || !open) chase(ctx);
+        if (s.lobIn <= 0 && d <= p.range && open) enter(s, 'windup');
         break;
+      }
       case 'windup':
         e.pose('windup', p.windup);
         if (s.t >= p.windup) {

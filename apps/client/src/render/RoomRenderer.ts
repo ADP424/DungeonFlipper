@@ -1,13 +1,16 @@
-import { Container, Graphics, Sprite, type Texture } from 'pixi.js';
+import { Container, Sprite, type Texture } from 'pixi.js';
 import {
   BARRICADE_TIERS, FACINGS, TILE_PX, solidBoxes, footprint, registry, wallMask, type FurniturePlacement, type RoomLayout,
 } from '@df/shared';
 import { hasArt, opaqueAt, tex } from '../engine/assets';
 
-/** Builds the static visuals of a room (floor, surfaces, obstacles, walls) and furniture views. */
+/**
+ * Builds the static visuals of a room: what lies flat (floor, surfaces, flat obstacles) in `floor`, and
+ * what stands up (walls, barricades, furniture) in the entity layer, sorted in depth with the actors.
+ */
 export class RoomRenderer {
   readonly floor = new Container();
-  readonly walls = new Container();
+  private standing: Sprite[] = [];
   readonly furnitureViews = new Map<string, Container>();
 
   constructor(private layout: RoomLayout, private entityLayer: Container) {
@@ -16,7 +19,7 @@ export class RoomRenderer {
 
   rebuild(): void {
     this.floor.removeChildren().forEach((c) => c.destroy());
-    this.walls.removeChildren().forEach((c) => c.destroy());
+    this.clearStanding();
     const L = this.layout;
     const st = L.state;
     for (const { x, y, kind } of L.tiles()) {
@@ -27,13 +30,11 @@ export class RoomRenderer {
         const surf = L.floorSurfaceAt(x, y);
         this.floor.addChild(this.sprite(registry.surfaces.tryGet(surf)?.sprite ?? `floor/${surf}`, px, py));
         if (kind === 'door') {
-          const g = new Graphics().rect(px, py, TILE_PX, TILE_PX).fill({ color: 0x000000, alpha: 0.25 });
-          this.floor.addChild(g);
           const b = L.barricadeAt(x, y);
           if (b) {
-            this.walls.addChild(this.sprite(`barricades/tier_${b.tier}`, px, py));
+            this.stand(`barricades/tier_${b.tier}`, x, y, y + 1);
             const frac = b.hp / BARRICADE_TIERS[b.tier]!.hp;
-            if (frac < 0.66) this.walls.addChild(this.sprite(`barricades/cracks_${frac < 0.33 ? 2 : 1}`, px, py));
+            if (frac < 0.66) this.stand(`barricades/cracks_${frac < 0.33 ? 2 : 1}`, x, y, y + 1);
           }
         }
       }
@@ -45,14 +46,15 @@ export class RoomRenderer {
         continue;
       }
       const wallSurf = L.wallSurfaceAt(x, y);
+      const back = L.backEdge(x, y);
       if (obs.autotile) {
         // Faces point at whichever sides are open; shadows come from the lights (Shadows.ts).
         const key = `auto:${obs.autotile.set}:${wallMask(L, x, y)}`;
-        this.walls.addChild(this.sprite(wallSurf ? `${key}:${wallSurf}` : key, px, py));
+        this.stand(wallSurf ? `${key}:${wallSurf}` : key, x, y, back);
       } else if (wallSurf) {
-        this.walls.addChild(this.sprite(tall ? `wall:${wallSurf}` : `wallshort:${wallSurf}`, px, py));
+        this.stand(tall ? `wall:${wallSurf}` : `wallshort:${wallSurf}`, x, y, back);
       } else {
-        this.walls.addChild(this.sprite(obs.sprite, px, py));
+        this.stand(obs.sprite, x, y, back);
       }
     }
     this.syncFurniture();
@@ -62,6 +64,23 @@ export class RoomRenderer {
     const s = new Sprite(tex(key));
     s.position.set(x, y);
     return s;
+  }
+
+  /**
+   * Something standing on a tile, sorted in depth at `sort`. A wall sorts at its back edge
+   * (`RoomLayout.backEdge`): only what is behind that is behind the wall (and drawn under it); a body
+   * beside it, whose art overlaps its side, is not. A barricade is walked through, so it sorts at its front.
+   */
+  private stand(key: string, x: number, y: number, sort: number): void {
+    const s = this.sprite(key, x * TILE_PX, y * TILE_PX);
+    s.zIndex = sort;
+    this.standing.push(s);
+    this.entityLayer.addChild(s);
+  }
+
+  private clearStanding(): void {
+    for (const s of this.standing) s.destroy();
+    this.standing = [];
   }
 
   /** Ensure a view exists for every placed furniture and none for removed ones. */
@@ -97,8 +116,8 @@ export class RoomRenderer {
   destroy(): void {
     for (const v of this.furnitureViews.values()) v.destroy({ children: true });
     this.furnitureViews.clear();
+    this.clearStanding();
     this.floor.destroy({ children: true });
-    this.walls.destroy({ children: true });
   }
 }
 
@@ -110,13 +129,13 @@ export function tabletopLift(base: FurniturePlacement | undefined): number {
 }
 
 /**
- * Where a piece sorts in depth among actors (who sort by their feet): the bottom of its solid boxes,
- * so you're drawn behind it exactly when you're behind its base. A piece on a tabletop draws just in
- * front of its table.
+ * Where a piece sorts in depth among actors (who sort by their feet): the back edge of its solid boxes,
+ * so you're drawn behind it only when you're behind its base, not beside it. A piece on a tabletop
+ * draws just in front of its table.
  */
 export function furnitureDepth(f: FurniturePlacement, base?: FurniturePlacement): number {
   if (base) return furnitureDepth(base) + 0.01;
-  return Math.max(...solidBoxes(registry.furniture.get(f.defId), f).map((b) => b.y + b.h));
+  return Math.min(...solidBoxes(registry.furniture.get(f.defId), f).map((b) => b.y));
 }
 
 /** Whether a world point (tiles) is on a visible pixel of a piece's art (for picking it with the mouse). */

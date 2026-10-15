@@ -66,7 +66,7 @@ export class TenantNpc extends Actor {
       }
     }
     const kn = this.knockStep(dt);
-    const res = moveAndCollide(this.x, this.y, this.radius * 0.9, dx * speed * dt + kn.dx, dy * speed * dt + kn.dy, game.room.blockerFor('walk', 'enemy'));
+    const res = moveAndCollide(this.x, this.y, this.footing(0.9), dx * speed * dt + kn.dx, dy * speed * dt + kn.dy, game.room.blockerFor('walk', 'enemy'));
     if (this.target && res.x === this.x && res.y === this.y && (dx || dy)) this.target = null;
     this.x = res.x;
     this.y = res.y;

@@ -1,6 +1,7 @@
 import { Container, Sprite } from 'pixi.js';
 import { TILE_PX, type LightDef, type MovementKind } from '@df/shared';
 import { tex } from '../../engine/assets';
+import type { Footing } from '../../engine/collision';
 
 export type Team = 'player' | 'enemy' | 'neutral';
 
@@ -13,7 +14,12 @@ let nextId = 1;
  */
 export const artPixel = (tiles: number) => Math.round(tiles * TILE_PX);
 
-/** Base for everything that lives in a room at runtime. Positions are tile units (floats). */
+/**
+ * Base for everything that lives in a room at runtime. Positions are tile units (floats), and are spots
+ * on the floor: where a thing stands (an actor's feet) or what it is over (a shot in flight). Its art
+ * is drawn up from there, so the game's geometry is all on the floor and nothing's position is ever
+ * inside a wall it merely stands in front of.
+ */
 export abstract class Entity {
   readonly id = nextId++;
   x = 0;
@@ -29,6 +35,11 @@ export abstract class Entity {
   light?: LightDef;
   readonly view = new Container();
 
+  /** Where the middle of it is drawn (tiles): where to point at it, and where its hits and sparks show. */
+  get midY(): number {
+    return this.y;
+  }
+
   /** Sync the view to the simulation state. */
   syncView(): void {
     this.view.position.set(artPixel(this.x), artPixel(this.y));
@@ -36,7 +47,7 @@ export abstract class Entity {
   }
 }
 
-/** Something with a sprite, a drop shadow and a hit flash. */
+/** Something with a sprite standing on its position, a drop shadow and a hit flash. */
 export abstract class Actor extends Entity {
   readonly sprite: Sprite;
   readonly shadow: Sprite;
@@ -46,6 +57,8 @@ export abstract class Actor extends Entity {
   /** Knockback velocity, decays every frame. */
   kx = 0;
   ky = 0;
+  /** How deep its footing is (tiles): how far short of a thing's base its feet stop. */
+  depth = 2 / TILE_PX;
 
   /**
    * Sprites are never scaled (every art pixel is the same size on screen): a bigger actor has bigger
@@ -59,7 +72,7 @@ export abstract class Actor extends Entity {
     const h = this.sprite.texture.height;
     this.shadow = new Sprite(tex(this.sprite.texture.width > 16 ? 'fx/shadow_large' : 'fx/shadow'));
     this.shadow.anchor.set(0.5, 0.5);
-    this.shadow.y = Math.round(h * 0.375);
+    this.shadow.y = -Math.round(h / 8);
     this.baseTint = tint ?? 0xffffff;
     this.sprite.tint = this.baseTint;
     this.view.addChild(this.shadow, this.sprite);
@@ -74,9 +87,24 @@ export abstract class Actor extends Entity {
     this.sprite.texture = tex(key);
   }
 
+  /** How far above its position the middle of its art is drawn (px). */
+  get bodyLift(): number {
+    return this.sprite.texture.height / 2;
+  }
+
+  override get midY(): number {
+    return this.y - this.bodyLift / TILE_PX;
+  }
+
+  /** The floor it stands on, for collision: as wide as its radius (times `fit`, for a body that shouldn't snag). */
+  footing(fit = 1): Footing {
+    return { half: this.radius * fit, depth: this.depth };
+  }
+
   override syncView(): void {
     super.syncView();
-    this.sprite.y = -artPixel(this.z) + this.sprite.texture.height / 4;
+    // The art stands on the position (the sprite is anchored three quarters of the way down).
+    this.sprite.y = -artPixel(this.z) - this.sprite.texture.height / 4;
     this.sprite.tint = this.flash > 0 ? 0xff6060 : this.baseTint;
     this.sprite.alpha = 1;
   }

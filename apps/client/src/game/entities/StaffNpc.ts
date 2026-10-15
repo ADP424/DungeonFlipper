@@ -57,7 +57,7 @@ export class StaffNpc extends Actor {
     }
     const d = Math.hypot(t.x - this.x, t.y - this.y) || 1;
     const speed = 2.2 * dt;
-    const res = moveAndCollide(this.x, this.y, this.radius * 0.9, ((t.x - this.x) / d) * speed, ((t.y - this.y) / d) * speed, game.room.blockerFor('walk', 'enemy'));
+    const res = moveAndCollide(this.x, this.y, this.footing(0.9), ((t.x - this.x) / d) * speed, ((t.y - this.y) / d) * speed, game.room.blockerFor('walk', 'enemy'));
     this.stuck = res.x === this.x && res.y === this.y ? this.stuck + dt : 0;
     this.x = res.x;
     this.y = res.y;

@@ -3,9 +3,10 @@
 // Usage: node scripts/enemy-placeholders.mjs [--force]   (existing images are kept unless --force)
 //
 // An enemy's art is a folder, art/enemies/<id>/ (bosses: art/bosses/<id>/):
-//   idle.png          its resting art (drawn by hand; this script never writes it)
+//   idle.png          its resting art (drawn by hand; this script never writes it), or idle/0.png… if it moves
 //   <anim>/0.png…     the frames of each animation its def names in `anims` (windup, stunned, call…)
 //   held.png          what it holds, drawn pointing up and gripped at its bottom centre
+// One with `views` in its def is drawn by hand throughout, a drawing per view (idle/<view>.png, <anim>/<view>/0.png…).
 // Replace any generated file with real art; the game only looks at the file names.
 import { deflateSync, inflateSync } from 'node:zlib';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -27,7 +28,6 @@ const force = process.argv.includes('--force');
  */
 const RED = 0xff7060, WHITE = 0xffffff, BLUE = 0x80c0ff;
 const ANIMS = {
-  'enemies/ceiling_moth': { windup: [{ squash: 1 }, { squash: 2, tint: [WHITE, 0.25] }] },
   'enemies/damp_blob': { windup: [{ squash: 1 }, { squash: 3 }, { squash: 5, tint: [BLUE, 0.2] }] },
   'enemies/intern': { windup: [{ lean: -1 }, { lean: -1, squash: 1, tint: [RED, 0.2] }] },
   'enemies/water_cooler': { windup: [{ squash: 1 }, { squash: 2, tint: [BLUE, 0.25] }, { lean: 1, tint: [BLUE, 0.35] }] },

@@ -2,13 +2,15 @@
 // Usage: node scripts/wall-placeholders.mjs [--force]   (existing images are kept unless --force)
 // The backrooms walls are drawn by hand and aren't listed here; these follow their layout and masks.
 //
-// Each folder holds four 8×8 pieces, and a wallpaper mask next to each piece that has a face:
-//   outer.png  outer corner   exposed (open) on the north and west sides
-//   edge.png   edge           exposed on the north side; must tile horizontally with itself
-//   inner.png  inner corner   only the north-west diagonal is open
-//   fill.png   fully enclosed; drawn unturned, so it must tile with itself
-//   <piece>_mask.png          pixels with alpha > 0 are where wallpaper replaces the face
-// The other pieces are drawn as the top-left quarter of a tile; the game turns them into the other quarters.
+// The world is seen from the south, tilted back: a wall shows its top, and below it its face where it's
+// open to the south. Each folder holds five 16×16 pieces, each a whole tile whose four quarters are that
+// piece's four corners (the game takes a quarter at a time), and a wallpaper mask next to each with a face:
+//   outer.png       a lone pillar: open on every side
+//   horizontal.png  a wall running east–west: open to the north and south; must tile horizontally
+//   vertical.png    a wall running north–south: open to the west and east; must tile vertically
+//   inner.png       a cross junction: only the diagonals are open
+//   fill.png        fully enclosed: the wall's top; must tile with itself
+//   <piece>_mask.png  pixels with alpha > 0 are where wallpaper replaces the face
 import { deflateSync } from 'node:zlib';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -18,10 +20,10 @@ const OUT = join(dirname(fileURLToPath(import.meta.url)), '../apps/client/art/wa
 const force = process.argv.includes('--force');
 
 /**
- * Per material: `line` runs along both sides of the face, and `main` is the face (what shows without
- * wallpaper) and the enclosed top, with texture drawn over it. `face` is the texture of a face, six
- * rows from the open side inward, running along the wall (8 px, must tile); `fill` the texture of the
- * enclosed top (8×8, must tile). Texture letters index `tex`; '.' is `main`.
+ * Per material: `line` outlines the wall's top and runs along both sides of its face, and `main` is the
+ * face (what shows without wallpaper) and the top, with texture drawn over it. `face` is the texture of
+ * a face, from the wall's top down (repeating), running along the wall (8 px, must tile); `fill` the
+ * texture of the top (8×8, must tile). Texture letters index `tex`; '.' is `main`.
  */
 const PLAIN = Array(8).fill('........');
 const MATERIALS = {
@@ -70,32 +72,43 @@ const MATERIALS = {
   },
 };
 
-/** Wall obstacle id → its material. Low and full-height walls share a look (and the backrooms masks). */
+/**
+ * How a wall of each height is drawn: its face's rows (between a line under the top and one along the
+ * floor), the clear rows above its top where it's open to the north (a low wall's top is that much
+ * lower), and how its top is shaded from the material's colours: a full-height wall's is above the
+ * lights, a low wall's is lit from above.
+ */
+const TALL = { face: 9, gap: 0, top: 0.7 }, SHORT = { face: 5, gap: 4, top: 1.1 };
+
+/** Wall obstacle id → its material and height. */
 const WALLS = {
-  concrete_wall: 'concrete', concrete_wall_short: 'concrete',
-  timber_wall: 'timber', timber_wall_short: 'timber',
-  drywall: 'drywall', drywall_short: 'drywall',
+  concrete_wall: ['concrete', TALL], concrete_wall_short: ['concrete', SHORT],
+  timber_wall: ['timber', TALL], timber_wall_short: ['timber', SHORT],
+  drywall: ['drywall', TALL], drywall_short: ['drywall', SHORT],
 };
 
+const S = 16;
+
 /**
- * What a pixel of a piece is, laid out as on the backrooms wall: 'line', the enclosed top
- * (`fill`), or face: `d` rows in from the open side (1–6) and `a` px along the wall.
+ * What a pixel of a piece is, laid out as on the backrooms walls: 'line', 'top', nothing (null, above
+ * a low wall's top), or face, `d` rows below the line under the top (0…).
  */
-function role(piece, x, y) {
-  if (piece === 'fill') return { fill: true };
-  if (piece === 'edge') return y === 0 || y === 7 ? 'line' : { d: y, a: x };
-  if (piece === 'outer') {
-    if (x === 0 || y === 0 || (x === 7 && y === 7)) return 'line';
-    return { d: Math.min(x, y), a: Math.max(x, y) };
-  }
-  // Inner corner: the neighbours' faces meet, and their lines turn the corner at its first pixel.
-  if ((x === 0 && y === 0) || x === 7 || y === 7) return 'line';
-  return { d: Math.max(x, y), a: Math.min(x, y) };
+function role(piece, x, y, height) {
+  if (piece === 'fill') return 'top';
+  const side = x === 0 || x === S - 1, lip = S - 2 - height.face;
+  if (piece === 'vertical') return side ? 'line' : 'top';
+  // Inner corners: the neighbours' lines meet at the corner pixel, and beside the lower two a
+  // neighbour's face ends.
+  if (piece === 'inner') return side && (y === 0 || y >= lip) ? 'line' : 'top';
+  if (y < height.gap) return null;
+  if (y === height.gap || y === lip || y === S - 1 || (piece === 'outer' && side)) return 'line';
+  return y > lip ? { d: y - lip - 1 } : 'top';
 }
 
+const shade = (c, f) => [16, 8, 0].reduce((out, s) => out | (Math.min(255, Math.round(((c >> s) & 255) * f)) << s), 0);
+
 /** One piece's image and its wallpaper mask (null when the piece has no face), as PNGs. */
-function images(piece, m) {
-  const S = 8;
+function images(piece, m, height) {
   const art = new Uint8Array(S * S * 4), mask = new Uint8Array(S * S * 4);
   const set = (px, x, y, c) => {
     const i = (y * S + x) * 4;
@@ -105,10 +118,11 @@ function images(piece, m) {
   let faced = false;
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
-      const r = role(piece, x, y);
+      const r = role(piece, x, y, height);
+      if (!r) continue;
       if (r === 'line') { set(art, x, y, m.line); continue; }
-      if (r.fill) { set(art, x, y, tex(m.fill[y][x])); continue; }
-      set(art, x, y, tex(m.face[r.d - 1][r.a]));
+      if (r === 'top') { set(art, x, y, shade(tex(m.fill[y % 8][x % 8]), height.top)); continue; }
+      set(art, x, y, tex(m.face[r.d % m.face.length][x % 8]));
       set(mask, x, y, 0xffffff);
       faced = true;
     }
@@ -153,10 +167,10 @@ function write(file, data) {
   console.log(`wrote ${file}`);
 }
 
-for (const [wall, material] of Object.entries(WALLS)) {
+for (const [wall, [material, height]] of Object.entries(WALLS)) {
   mkdirSync(join(OUT, wall), { recursive: true });
-  for (const piece of ['outer', 'edge', 'inner', 'fill']) {
-    const { art, mask } = images(piece, MATERIALS[material]);
+  for (const piece of ['outer', 'horizontal', 'vertical', 'inner', 'fill']) {
+    const { art, mask } = images(piece, MATERIALS[material], height);
     write(join(OUT, wall, `${piece}.png`), art);
     if (mask) write(join(OUT, wall, `${piece}_mask.png`), mask);
   }

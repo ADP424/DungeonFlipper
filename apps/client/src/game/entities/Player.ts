@@ -1,16 +1,18 @@
 import { Container, Graphics, Sprite } from 'pixi.js';
 import {
-  BARRICADE_TIERS, Stats, TILE_PX, UNARMED_ATTACK, countLeft, footprint, itemDef, pivotIn, registry, structuralWallTarget,
-  type AttackDef, type FurniturePlacement, type ItemInstance,
+  BARRICADE_TIERS, BODY_VIEWS, Stats, TILE_PX, UNARMED_ATTACK, countLeft, dirGap, dirOf, footprint, frameAt, itemDef, pivotIn, registry,
+  structuralWallTarget,
+  type AnimSpeed, type AttackDef, type FurniturePlacement, type ItemInstance,
 } from '@df/shared';
 import { frameKeys, tex } from '../../engine/assets';
 import { moveAndCollide } from '../../engine/collision';
 import { buildFurnitureView } from '../../render/RoomRenderer';
 import { actionFor } from '../actions/tools';
 import { MeleeSwing } from '../combat/MeleeSwing';
+import { heldIn } from '../reach';
 import type { Game } from '../Game';
 import type { Enemy } from './Enemy';
-import { Actor } from './Entity';
+import { Actor, artPixel } from './Entity';
 import { Projectile } from './Projectile';
 
 const REACH = 2.25;
@@ -31,17 +33,16 @@ const WORK_HOLD = 0.5;
 const STRUCTURAL_HOLD = 1.5;
 /** Tiles covered per walk frame, so the feet keep pace with the speed. */
 const STRIDE = 0.4;
-/** Seconds per idle (breathing) frame: a light breath. */
-const BREATH_FRAME = 0.8;
+/** How fast the idle (breathing) frames go: a light breath. */
+const BREATH: AnimSpeed = 'slowest';
+/** How fast the body blinks while it can't be hurt. */
+const BLINK: AnimSpeed = 'fastest';
 /**
  * The player is drawn as a body (art/player/body/<view>/idle/0.png… and walk/0.png…) facing where they
- * walk, and a head on top (art/player/head/<view>.png) facing the mouse. The eight directions (east
- * first, clockwise on screen) use five views drawn facing right; the left side mirrors them.
+ * walk, and a head on top (art/player/head/<view>.png) facing the mouse: five views drawn facing right,
+ * mirrored for the left side.
  */
-const VIEWS: [view: string, mirror: boolean][] = [
-  ['side', false], ['front_diag', false], ['front', false], ['front_diag', true],
-  ['side', true], ['back_diag', true], ['back', false], ['back_diag', false],
-];
+const VIEWS = BODY_VIEWS.mirrored;
 /**
  * Where each hand is in a body view (px from the player's feet, as drawn facing right), and whether
  * it's on the far side of the body. Held items grip there by their bottom centre: the main item (L
@@ -50,11 +51,11 @@ const VIEWS: [view: string, mirror: boolean][] = [
  */
 type Hand = { x: number; y: number; behind: boolean };
 const HANDS: Record<string, { left: Hand; right: Hand }> = {
-  front: { left: { x: 3, y: 4, behind: false }, right: { x: -3, y: 4, behind: false } },
-  front_diag: { left: { x: 3, y: 4, behind: false }, right: { x: -3, y: 4, behind: false } },
-  side: { left: { x: 1.5, y: 3, behind: true }, right: { x: 0.5, y: 4, behind: false } },
-  back_diag: { left: { x: -3, y: 4, behind: false }, right: { x: 3, y: 4, behind: false } },
-  back: { left: { x: -3, y: 4, behind: false }, right: { x: 3, y: 4, behind: false } },
+  front: { left: { x: 3, y: -4, behind: false }, right: { x: -3, y: -4, behind: false } },
+  front_diag: { left: { x: 3, y: -4, behind: false }, right: { x: -3, y: -4, behind: false } },
+  side: { left: { x: 1.5, y: -5, behind: true }, right: { x: 0.5, y: -4, behind: false } },
+  back_diag: { left: { x: -3, y: -4, behind: false }, right: { x: 3, y: -4, behind: false } },
+  back: { left: { x: -3, y: -4, behind: false }, right: { x: 3, y: -4, behind: false } },
 };
 function handOf(view: string, mirror: boolean, side: 'left' | 'right'): Hand {
   const hands = HANDS[view]!;
@@ -64,9 +65,6 @@ function handOf(view: string, mirror: boolean, side: 'left' | 'right'): Hand {
 }
 /** Draw order inside the player's view: shadow, things behind the body, body, head, things in front. */
 const Z = { shadow: -2, behind: -1, body: 0, head: 1, front: 2, carried: 3 };
-const dirOf = (angle: number) => ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
-/** Steps between two of the eight directions (0–4). */
-const dirGap = (a: number, b: number) => Math.min((a - b + 8) % 8, (b - a + 8) % 8);
 
 export class Player extends Actor {
   readonly stats = new Stats();
@@ -74,6 +72,8 @@ export class Player extends Actor {
   iframes = 0;
   private cd = { main: 0, off: 0 };
   swing: MeleeSwing | null = null;
+  /** The hand the swing in progress came from. */
+  private swingSlot: Slot = 'main';
   private held: Sprite;
   private offHeld: Sprite;
   private carryView: Container | null = null;
@@ -123,8 +123,16 @@ export class Player extends Actor {
     this.overlay.addChild(this.highlight);
   }
 
+  /** Where a thing held out from the body can't be: anywhere the body couldn't stand (see reach.ts). */
+  private reachBlocked = (x: number, y: number) => this.game.room.blockedAt(x, y, this.movementKind, 'player');
+
   get state() {
     return this.game.session.player;
+  }
+
+  /** Where their head is turned (radians): the one of the eight directions its art shows. */
+  get lookAngle(): number {
+    return dirOf(this.aim) * (Math.PI / 4);
   }
 
   maxRedHalves(): number {
@@ -152,7 +160,7 @@ export class Player extends Actor {
     if (this.state.carrying) speed *= 0.75;
     speed *= g.room.slowAt(this.x, this.y);
     const kn = this.knockStep(dt);
-    const res = moveAndCollide(this.x, this.y, this.radius, mv.x * speed * dt + kn.dx, mv.y * speed * dt + kn.dy, g.room.blockerFor('walk', 'player'));
+    const res = moveAndCollide(this.x, this.y, this.footing(), mv.x * speed * dt + kn.dx, mv.y * speed * dt + kn.dy, g.room.blockerFor('walk', 'player'));
     const moved = Math.hypot(res.x - this.x, res.y - this.y);
     this.walked = (mv.x || mv.y) && moved > 1e-4 ? this.walked + moved : 0;
     this.stood = this.walked ? 0 : this.stood + dt;
@@ -161,7 +169,8 @@ export class Player extends Actor {
 
     // Aim
     const m = g.mouseWorld();
-    this.aim = Math.atan2(m.y - this.y, m.x - this.x);
+    // They point from the middle of the body, where it's drawn.
+    this.aim = Math.atan2(m.y - this.midY, m.x - this.x);
     // The body faces the way they walk, unless that's over 90° from where they look: then it keeps
     // facing the other way and they walk backwards.
     if (mv.x || mv.y) {
@@ -188,13 +197,16 @@ export class Player extends Actor {
           this.interruptWork();
           g.damageEnemy(h.target as Enemy, s.damage, h.dirX, h.dirY, s.knockback);
         }
-      });
-      if (s.done) {
-        s.view.destroy({ children: true });
-        this.swing = null;
-      }
+      }, this.reachBlocked);
+      if (s.done) this.endSwing();
     }
     this.updateVisuals(dt);
+  }
+
+  /** The swing is over, or cut short (a room change, sleep, death): it goes together with its view. */
+  endSwing(): void {
+    this.swing?.view.destroy({ children: true });
+    this.swing = null;
   }
 
   private handleActions(dt: number): void {
@@ -232,14 +244,14 @@ export class Player extends Actor {
     // A realtor in their office: click to talk (trade). Attacks that land on them anyway are assaults.
     const realtor = g.realtorUnderCursor();
     if (realtor?.realtorId && Math.hypot(realtor.x - this.x, realtor.y - this.y) < 3) {
-      this.highlight.circle(realtor.x * TILE_PX, (realtor.y - 0.2) * TILE_PX, 7).stroke({ color: 0xffd080, width: 1, alpha: 0.9 });
+      this.highlight.circle(realtor.x * TILE_PX, (realtor.midY - 0.2) * TILE_PX, 7).stroke({ color: 0xffd080, width: 1, alpha: 0.9 });
       if (input.primaryPressed) g.ui.openRealtor(realtor.realtorId);
       return;
     }
     // Tenants and applicants: click to talk (and haggle).
     const npc = g.npcUnderCursor();
     if (npc && Math.hypot(npc.x - this.x, npc.y - this.y) < 3) {
-      this.highlight.circle(npc.x * TILE_PX, (npc.y - 0.2) * TILE_PX, 7).stroke({ color: 0x80c0ff, width: 1, alpha: 0.9 });
+      this.highlight.circle(npc.x * TILE_PX, (npc.midY - 0.2) * TILE_PX, 7).stroke({ color: 0x80c0ff, width: 1, alpha: 0.9 });
       if (input.primaryPressed) g.ui.openTenant(npc.tenantId);
       return;
     }
@@ -416,6 +428,7 @@ export class Player extends Actor {
     if (a.type === 'melee') {
       if (this.swing) return;
       this.cd[slot] = a.cooldown * cdMul;
+      this.swingSlot = slot;
       this.swing = new MeleeSwing(
         a,
         this.aim,
@@ -424,7 +437,10 @@ export class Player extends Actor {
         a.knockback * this.stats.get('knockback'),
         icon,
       );
-      g.fxLayer.addChild(this.swing.view);
+      // The swing is worked out on the floor, and drawn around the body at its height, in front of it.
+      this.swing.view.y = -this.bodyLift;
+      this.swing.view.zIndex = Z.front;
+      this.view.addChild(this.swing.view);
     } else {
       const r = a;
       this.cd[slot] = r.cooldown * cdMul;
@@ -439,7 +455,7 @@ export class Player extends Actor {
         const md = Math.min(reachMax, Math.hypot(m.x - this.x, m.y - this.y));
         g.spawnProjectile({
           def: pdef, team: 'player',
-          x: this.x + Math.cos(ang) * 0.3, y: this.y + Math.sin(ang) * 0.3 - 0.1,
+          x: this.x + Math.cos(ang) * 0.3, y: this.y + Math.sin(ang) * 0.3,
           dx: Math.cos(ang), dy: Math.sin(ang),
           damage: r.damage + this.stats.get('damage'),
           knockback: (r.knockback ?? 2) * this.stats.get('knockback'),
@@ -537,32 +553,37 @@ export class Player extends Actor {
     const [bodyView, bodyMirror] = VIEWS[this.bodyDir]!;
     const idle = `player/body/${bodyView}/idle`;
     // Walk cycle: a frame per STRIDE tiles, starting on a step, in reverse order when walking
-    // backwards. Standing still breathes, a frame per BREATH_FRAME seconds, starting from rest.
+    // backwards. Standing still breathes at BREATH, starting from rest.
     const walk = frameKeys(`player/body/${bodyView}/walk`), breath = frameKeys(idle);
     const step = Math.floor(this.walked / STRIDE + 1) % walk.length;
     this.setSprite(this.walked > 0
       ? walk[this.backwards ? (walk.length - step) % walk.length : step]!
-      : breath[Math.floor(this.stood / BREATH_FRAME) % breath.length]!);
+      : breath[frameAt(this.stood, BREATH) % breath.length]!);
     this.sprite.scale.x = bodyMirror ? -1 : 1;
     const [headView, headMirror] = VIEWS[headDir]!;
     this.headKey = `player/head/${headView}`;
     this.head.texture = tex(this.headKey);
     this.head.scale.x = headMirror ? -1 : 1;
-    // Main-hand item, in the left hand, pointing at the mouse (hidden while a swing animates it).
+    // An item is hidden while a swing from its own hand animates it; the other hand keeps its item.
+    const swinging = this.swing ? this.swingSlot : null;
+    // Main-hand item, in the left hand, pointing at the mouse.
     // It's behind you in your far hand, or pointing away from the camera.
     const main = hb.main ? itemDef(hb.main) : undefined;
-    this.held.visible = !!main && !this.swing && !st.carrying;
+    this.held.visible = !!main && swinging !== 'main' && !st.carrying;
     if (main) {
       const hand = handOf(bodyView, bodyMirror, 'left');
       this.held.texture = tex(main.icon);
-      this.held.position.set(hand.x, hand.y);
       this.held.rotation = this.aim + Math.PI / 2;
+      // Held in from anything it would stick into (the hand is level with itself over the floor).
+      const at = { x: artPixel(this.x), y: artPixel(this.y) };
+      const back = heldIn(main.icon, 1, at.x + hand.x, at.y, this.held.rotation, at, this.reachBlocked);
+      this.held.position.set(hand.x + back.x, hand.y + back.y);
       this.held.zIndex = hand.behind || Math.sin(this.aim) < -0.3 ? Z.behind : Z.front;
     }
     // Off-hand item, carried upright in the right hand, leaning away from the body. It's behind you in
     // your far hand, or when you face away.
     const off = hb.off ? itemDef(hb.off) : undefined;
-    this.offHeld.visible = !!off && !st.carrying;
+    this.offHeld.visible = !!off && swinging !== 'off' && !st.carrying;
     if (off) {
       const hand = handOf(bodyView, bodyMirror, 'right');
       this.offHeld.texture = tex(off.icon);
@@ -584,13 +605,13 @@ export class Player extends Actor {
         this.view.addChild(this.carryView);
       }
     }
-    if (this.carryView) this.carryView.position.set(0, -22);
+    if (this.carryView) this.carryView.position.set(0, -30);
     if (!st.carrying && this.ghost) {
       this.ghost.destroy({ children: true });
       this.ghost = null;
       this.ghostKey = '';
     }
-    this.sprite.alpha = this.iframes > 0 && Math.floor(this.iframes * 12) % 2 === 0 ? 0.4 : 1;
+    this.sprite.alpha = this.iframes > 0 && frameAt(this.iframes, BLINK) % 2 === 0 ? 0.4 : 1;
   }
 
   override syncView(): void {

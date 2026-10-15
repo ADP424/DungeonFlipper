@@ -216,6 +216,14 @@ export class AreaLayout implements TileQueries {
     return L ? L.blocksProjectile(x, y, t) : true;
   }
 
+  tileSolid(x: number, y: number): Box {
+    return this.roomAt(x, y)?.tileSolid(x, y) ?? { x, y, w: 1, h: 1 };
+  }
+
+  backEdge(x: number, y: number): number {
+    return this.roomAt(x, y)?.backEdge(x, y) ?? y;
+  }
+
   solidsAt(x: number, y: number, kind: MovementKind): Box[] {
     const L = this.roomAt(x, y);
     return L ? L.solidsAt(x, y, kind) : [{ x, y, w: 1, h: 1 }];

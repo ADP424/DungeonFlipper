@@ -5,6 +5,7 @@ export default {
   name: 'Bed',
   size: { w: 1, h: 2 },
   sprite: 'furniture/bed',
+  depth: { south: 28, north: 28, side: 12 },
   height: 0.5,
   blocksMovement: ['walk'],
   blocksProjectiles: [],

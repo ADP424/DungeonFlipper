@@ -1,7 +1,9 @@
 import { Container, Graphics, Sprite } from 'pixi.js';
 import { TILE_PX, angleDiff, type MeleeAttackDef } from '@df/shared';
 import { tex } from '../../engine/assets';
+import type { PointBlockedFn } from '../../engine/collision';
 import type { Entity } from '../entities/Entity';
+import { heldIn } from '../reach';
 
 export interface SwingHit { target: Entity; dirX: number; dirY: number }
 
@@ -12,6 +14,9 @@ export interface SwingHit { target: Entity; dirX: number; dirY: number }
  *  smash – a circular impact `range` tiles ahead at the end of the windup
  *  spin  – a full 360° sweep
  * Range is measured from the wielder's body edge, so 1.25 means 1¼ tiles of reach.
+ *
+ * Its view is drawn around the wielder (it belongs in their view, at the height of their body), so the
+ * swing sorts in depth with them; the weapon is held in from anything it would stick into (`heldIn`).
  */
 export class MeleeSwing {
   t = 0;
@@ -28,7 +33,7 @@ export class MeleeSwing {
     readonly range: number,
     readonly damage: number,
     readonly knockback: number,
-    icon: string,
+    readonly icon: string,
   ) {
     this.weapon = new Sprite(tex(icon));
     this.weapon.anchor.set(0.5, 0.9);
@@ -44,7 +49,7 @@ export class MeleeSwing {
     return Math.max(0, Math.min(1, (this.t - this.attack.windup) / this.attack.duration));
   }
 
-  update(dt: number, ox: number, oy: number, ownerRadius: number, targets: Entity[], onHit: (h: SwingHit) => void): void {
+  update(dt: number, ox: number, oy: number, ownerRadius: number, targets: Entity[], onHit: (h: SwingHit) => void, blocked: PointBlockedFn): void {
     this.t += dt;
     const a = this.attack;
     const reach = ownerRadius + this.range;
@@ -61,7 +66,10 @@ export class MeleeSwing {
       }
       if (a.pattern === 'smash') this.smashed = true;
     }
-    this.draw(ox, oy, ownerRadius, reach);
+    this.draw(ownerRadius, reach);
+    const at = { x: ox * TILE_PX, y: oy * TILE_PX };
+    const back = heldIn(this.icon, this.weapon.anchor.y, at.x + this.weapon.x, at.y + this.weapon.y, this.weapon.rotation, at, blocked);
+    this.weapon.position.set(this.weapon.x + back.x, this.weapon.y + back.y);
     if (this.t > a.windup + a.duration + 0.05) this.done = true;
   }
 
@@ -100,11 +108,11 @@ export class MeleeSwing {
     }
   }
 
-  private draw(ox: number, oy: number, ownerR: number, reach: number): void {
+  private draw(ownerR: number, reach: number): void {
     const a = this.attack;
     const g = this.gfx.clear();
     const P = TILE_PX;
-    const cx = ox * P, cy = oy * P;
+    const cx = 0, cy = 0;
     const p = this.progress;
     const windup = this.t < a.windup;
     this.weapon.visible = true;

@@ -1,4 +1,4 @@
-import type { ProjectileDef } from '@df/shared';
+import { shotTrajectory, type ProjectileDef } from '@df/shared';
 import type { Enemy } from '../entities/Enemy';
 import type { BrainCtx } from './brain';
 
@@ -11,10 +11,13 @@ export interface Shot {
   speedMul?: number;
 }
 
-/** One projectile along an angle. Lobbed ones land where the player is standing now. */
+/**
+ * One projectile along an angle. Lobbed ones land where the player is standing now; straight ones
+ * fired from the air fly over anything short (`shotTrajectory`).
+ */
 export function shoot({ game, e }: Who, def: ProjectileDef, angle: number, shot: Shot): void {
   game.spawnProjectile({
-    def, team: 'enemy', x: e.x, y: e.y - 0.1, dx: Math.cos(angle), dy: Math.sin(angle),
+    def, trajectory: shotTrajectory(def, e.movementKind), team: 'enemy', x: e.x, y: e.y, dx: Math.cos(angle), dy: Math.sin(angle),
     damage: shot.damage, knockback: 0, speedMul: shot.speedMul, targetX: game.player.x, targetY: game.player.y,
   });
 }

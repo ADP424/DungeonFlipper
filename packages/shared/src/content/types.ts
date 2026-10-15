@@ -3,11 +3,17 @@
  * Behaviour lives in named, parameterised modules (see BehaviorRef) resolved by the client,
  * so new content is usually a new def file and new mechanics are a new behaviour module.
  */
+import type { AnimSpeed } from '../core/animation';
+import type { BodyViewSet } from '../core/views';
 
 /** How an entity moves; obstacles declare which kinds they block. Extend freely (jump, climb, swim…). */
 export type MovementKind = 'walk' | 'fly';
-/** How a projectile travels; obstacles declare which kinds they block. */
-export type TrajectoryKind = 'straight' | 'lobbed';
+/**
+ * How a projectile travels; obstacles declare which kinds they block. `straight` flies at a body's
+ * middle; `high` is a straight shot fired from the air (by a flyer, `shotTrajectory`), over anything
+ * short; `lobbed` arcs over everything but what is tall.
+ */
+export type TrajectoryKind = 'straight' | 'high' | 'lobbed';
 
 /**
  * Sprite reference: the path of a PNG under apps/client/art/, without the extension ('furniture/sofa').
@@ -55,6 +61,13 @@ export interface ObstacleDef {
   hazard?: { damage: number; enemyDamage: number; affects: MovementKind[] };
   /** Visual / renovation height. Short walls cost 1 to build, demolish or paper; tall walls cost 2. Also sets shadow length. */
   height: WallHeight;
+  /**
+   * How much floor it stands on, front to back: art pixels up from the tile's south edge (default: the
+   * whole tile). The rest of the tile is the thing rising up, which bodies can step behind (and are
+   * drawn under) unless something else stands there. Walls of both heights are as deep as a tall
+   * wall's top is drawn (the tile less its face), so bodies stop at the same spot behind either.
+   */
+  depth?: number;
   /** Can take wallpaper. */
   isWall?: boolean;
   /** Wall material, for upgrading short→tall with the matching kit. */
@@ -102,14 +115,24 @@ export interface FurnitureDef {
    */
   pivot?: { x: number; y: number };
   /**
-   * What's solid, as boxes in art pixels within the footprint facing south (they turn with it).
-   * Default: the whole footprint. A tall lamp is solid only at its base, so you can walk behind its pole.
+   * How much floor it stands on, front to back: art pixels up from the footprint's bottom edge as it's
+   * drawn, in every facing or per view (the art's views needn't agree). Default: the whole footprint.
+   * What's drawn above that is the piece rising up, which bodies can step behind.
+   */
+  depth?: number | { south: number; north: number; side: number };
+  /**
+   * What's solid, as boxes in art pixels within the footprint facing south (they turn with it), for
+   * shapes `depth` can't say. A tall lamp is solid only at its base, so you can walk behind its pole.
    */
   collision?: { x: number; y: number; w: number; h: number }[];
   blocksMovement: MovementKind[];
   blocksProjectiles: TrajectoryKind[];
   light?: LightDef;
-  /** Height in tiles, for shadow length (default 0.7). */
+  /**
+   * Height in tiles, for shadow length (default 0.7). A view with a painted height map
+   * (`<sprite>/<view>_height.png`, see assets.ts) takes its heights from that instead; this is then
+   * only how high things on its tabletop stand, and how tall its `collision` boxes are.
+   */
   height?: number;
   /** Container (e.g. storage chest): number of item slots. Containers open on click, lift on hold. */
   container?: { slots: number };
@@ -139,7 +162,8 @@ export interface FurnitureDef {
 
 export interface ProjectileDef {
   id: string;
-  trajectory: TrajectoryKind;
+  /** How it travels when the player or a walker throws it (`high` comes only from flyers, see `shotTrajectory`). */
+  trajectory: Exclude<TrajectoryKind, 'high'>;
   /** Tiles per second. */
   speed: number;
   /** Collision radius in tiles. */
@@ -263,14 +287,22 @@ export type ItemKind = ItemDef['kind'];
 
 // ───────────────────────────── Enemies ─────────────────────────────
 
-/** A named animation of an enemy: a wind-up, a stagger, a phone call… Brains play them by name. */
+/**
+ * A named animation of an enemy: a wind-up, a stagger, a phone call… Brains play them by name. One
+ * named `idle` plays whenever the brain poses nothing (without it the enemy rests on its `sprite`).
+ */
 export interface EnemyAnimDef {
-  /** A folder of numbered PNGs (`enemies/<id>/windup`), or one image for a single held pose. */
+  /**
+   * A folder of numbered PNGs (`enemies/<id>/windup`), or one image for a single held pose. For an
+   * enemy with `views`, a folder holding one of either per view (`sprint/left/0.png…`, `idle/left.png`).
+   */
   frames: SpriteKey;
-  /** Frames per second at its own pace (default 8). A brain may instead spread the frames over a duration. */
-  fps?: number;
-  /** Start over after the last frame instead of holding it. */
+  /** Its own pace (default `fast`). A brain may instead spread the frames over a duration. */
+  speed?: AnimSpeed;
+  /** Start over after the last frame instead of holding it. Loops everywhere run on one clock, so they stay in step. */
   loop?: boolean;
+  /** Flickers: swaps with the resting art and back at this speed. */
+  flicker?: AnimSpeed;
 }
 
 /**
@@ -286,11 +318,18 @@ export interface HeldItemDef {
 export interface EnemyDef {
   id: string;
   name: string;
-  /** Its resting art: `enemies/<id>/idle`. */
+  /** Its resting art: `enemies/<id>/idle` (with `views`, a folder of one image per view). */
   sprite: SpriteKey;
+  /**
+   * Drawn once per direction it faces (`Enemy.facing`): which views its art has (`BODY_VIEWS`). All of
+   * its art is then per view. Without it, one drawing serves every direction.
+   */
+  views?: BodyViewSet;
   tint?: number;
-  /** Collision radius in tiles. */
+  /** How wide it is: half its width in tiles, for collision and for what hits it. */
   radius: number;
+  /** How deep its footing is, in art pixels (default 2): how far short of a thing's base its feet stop. */
+  depth?: number;
   /** The same everywhere: an enemy is never scaled by where it's found. */
   hp: number;
   /**

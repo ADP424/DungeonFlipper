@@ -131,7 +131,7 @@ const rid = (rng: Rng, prefix: string) => `${prefix}${Math.floor(rng.next() * 2 
  * One 15-minute tick: barricades with monsters behind them wear down (and break), and monsters come
  * through unbarricaded doors from uncleared rooms into every room you've visited: more of whatever
  * lives behind that door, until the room holds as much as that neighbour spills (`spillCapacity`).
- * Only rooms you own getting invaded are reported (urgently); unowned rooms refill silently.
+ * A room you own that's got into starts its deadline (`roomInsecure`).
  */
 export function securingTick(
   state: WorldState,
@@ -147,7 +147,6 @@ export function securingTick(
     for (const info of Object.values(floor.rooms)) {
       const room = state.rooms[info.id];
       if (!room?.visited || quiet.has(info.id)) continue;
-      const wasClear = room.monsters.length === 0;
       let load = loadOf(room);
       const damaged: Record<string, number> = {};
       const arrive = ({ door, neighbor }: DoorStatus) => {
@@ -169,8 +168,7 @@ export function securingTick(
         }
         return n > 0;
       };
-      let breached = false;
-      let arrived = false;
+      let invaded = false;
       for (const d of doorStatuses(state, info)) {
         if (!d.uncleared || quiet.has(d.door.toRoom)) continue;
         if (d.barricade) {
@@ -185,28 +183,15 @@ export function securingTick(
             continue;
           }
           out.push({ type: 'barricadeSet', roomId: info.id, door: doorKey(d.door), barricade: null });
-          breached = true;
-          if (arrive(d)) arrived = true;
+          arrive(d);
+          invaded = true;
         } else if (rng.chance(SPAWN_CHANCE) && arrive(d)) {
-          arrived = true;
+          invaded = true;
         }
       }
       if (Object.keys(damaged).length) out.push({ type: 'barricadesDamaged', roomId: info.id, hp: damaged });
-      if (!arrived && !breached) continue;
-      // Only your own rooms getting invaded is news; monsters drifting back into unowned rooms isn't.
-      if (!room.ownerId) continue;
-      if (room.insecureSince === undefined) out.push({ type: 'roomInsecure', roomId: info.id, since: ctx.clock.day });
-      if (breached || wasClear) {
-        out.push({
-          type: 'messagePosted', playerId: room.ownerId,
-          message: {
-            id: rid(rng, 'msg'), day: ctx.clock.day, minute: ctx.clock.minute, severity: 'urgent',
-            text: breached
-              ? `Breach! Something broke through the barricade into ${roomLabel(info)}. Clear it and re-barricade by the end of tomorrow, or lose the room.`
-              : `Monsters got into ${roomLabel(info)} through an unbarricaded door. Secure it by the end of tomorrow, or lose the room.`,
-          },
-        });
-      }
+      // An owned room that's been got into starts its deadline.
+      if (invaded && room.ownerId && room.insecureSince === undefined) out.push({ type: 'roomInsecure', roomId: info.id, since: ctx.clock.day });
     }
   }
   return out;
@@ -218,37 +203,21 @@ export function securingTick(
  */
 export function securingDay(state: WorldState, ctx: { day: number; rng: Rng }): Command[] {
   const out: Command[] = [];
-  const atRisk = new Map<string, string[]>();
   for (const floor of Object.values(state.floors)) {
     if (floor.index === APARTMENT_FLOOR) continue;
     for (const info of Object.values(floor.rooms)) {
       const room = state.rooms[info.id];
       if (!room?.ownerId) continue;
-      const secure = isSecure(state, info.id);
-      if (secure) {
+      if (isSecure(state, info.id)) {
         if (room.insecureSince !== undefined) out.push({ type: 'roomInsecure', roomId: info.id, since: null });
-      } else if (room.insecureSince === undefined || room.insecureSince === ctx.day) {
-        if (room.insecureSince === undefined) out.push({ type: 'roomInsecure', roomId: info.id, since: ctx.day });
-        atRisk.set(room.ownerId, [...(atRisk.get(room.ownerId) ?? []), roomLabel(info)]);
+      } else if (room.insecureSince === undefined) {
+        out.push({ type: 'roomInsecure', roomId: info.id, since: ctx.day });
       } else if (room.insecureSince < ctx.day) {
         out.push({ type: 'roomInsecure', roomId: info.id, since: null });
         out.push({ type: 'roomOwnerCleared', roomId: info.id });
         for (const f of room.furniture) if (furnitureReg.tryGet(f.defId)?.claimsRoom) out.push({ type: 'furnitureRemoved', roomId: info.id, uid: f.uid });
-        out.push({
-          type: 'messagePosted', playerId: room.ownerId,
-          message: { id: rid(ctx.rng, 'msg'), day: ctx.day, minute: 24 * 60, severity: 'urgent', text: `You lost ${roomLabel(info)}: it wasn't secured in time.` },
-        });
       }
     }
-  }
-  for (const [playerId, rooms] of atRisk) {
-    out.push({
-      type: 'messagePosted', playerId,
-      message: {
-        id: rid(ctx.rng, 'msg'), day: ctx.day, minute: 24 * 60, severity: 'warn',
-        text: `Not secure: ${rooms.join(', ')}. Clear it out and barricade every door to a room with monsters by the end of tomorrow, or lose ${rooms.length > 1 ? 'them' : 'it'}.`,
-      },
-    });
   }
   return out;
 }

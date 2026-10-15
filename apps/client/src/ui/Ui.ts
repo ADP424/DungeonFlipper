@@ -711,8 +711,9 @@ export class Ui {
     while (this.toasts.children.length > 4) this.toasts.firstChild!.remove();
   }
 
-  banner(title: string, sub: string): void {
-    this.bannerEl.innerHTML = `<div class="banner-title">${title}</div><div class="banner-sub">${sub}</div>`;
+  /** A place's name, shown briefly on arrival. */
+  banner(title: string): void {
+    this.bannerEl.innerHTML = `<div class="banner-title">${title}</div>`;
     this.bannerEl.classList.add('show');
     this.bannerTimer = performance.now() + 2600;
   }
@@ -814,11 +815,6 @@ export class Ui {
   /** Fade the whole screen to black (sleeping) or back. */
   fade(dark: boolean): void {
     this.fadeEl.classList.toggle('dark', dark);
-  }
-
-  /** Isaac-style item announcement. */
-  announce(name: string, description: string): void {
-    this.banner(name, description);
   }
 
   // ───────────────────────────── maps ─────────────────────────────
